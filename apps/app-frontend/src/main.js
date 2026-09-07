@@ -6,6 +6,7 @@ import FloatingVue from 'floating-vue'
 import { createApp } from 'vue'
 
 import App from '@/App.vue'
+import '@/assets/fodrinth.css'
 import { overlayScrollbarsDirective } from '@/directives/overlayScrollbars'
 import { setupErrorReporting } from '@/helpers/error-reporting'
 import i18nPlugin from '@/plugins/i18n'

@@ -1,0 +1,15 @@
+.sidebar-default-content > div:has(a[href='https://modrinth.com/news']) {
+	display: none !important;
+}
+
+.app-sidebar a[href='https://modrinth.plus?app'] {
+	display: none !important;
+}
+
+.app-sidebar::after {
+	display: none !important;
+}
+
+.app-sidebar-scrollable {
+	padding-bottom: 0 !important;
+}
