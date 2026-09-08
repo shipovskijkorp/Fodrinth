@@ -5,6 +5,7 @@ use thiserror::Error;
 pub mod auth;
 pub mod curseforge_creator_bridge;
 pub mod curseforge_downloads_v5;
+pub mod curseforge_downloads_v6;
 pub mod curseforge_projects_v2;
 pub mod import;
 pub mod install;
