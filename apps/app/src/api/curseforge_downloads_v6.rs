@@ -4,7 +4,7 @@ use tauri::{AppHandle, LogicalPosition, Manager, Runtime, WebviewWindow};
 
 const WINDOW_LABEL: &str = "curseforge-authors-downloads";
 const RESULT_PARAM: &str = "__fodrinth_cf_download_augmented_result";
-const PROJECT_AUGMENTER: &str = include_str!("curseforge_downloads_projects.js");
+const PROJECT_AUGMENTER: &str = include_str!("curseforge_downloads_bars.js");
 
 fn query_param<R: Runtime>(window: &WebviewWindow<R>, key: &str) -> Result<Option<String>, String> {
 	let url = window
