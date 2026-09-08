@@ -114,7 +114,7 @@ async fn poll_result<R: Runtime>(window: &WebviewWindow<R>) -> Result<Value, Str
         .map_err(|error| format!("Could not start CurseForge analytics result bridge: {error}"))?;
 
     let started = std::time::Instant::now();
-    while started.elapsed() < Duration::from_secs(55) {
+    while started.elapsed() < Duration::from_secs(90) {
         if let Some(raw) = query_param(window, RESULT_PARAM)? {
             let _ = clear_query_param(window, RESULT_PARAM);
             return serde_json::from_str::<Value>(&raw)
@@ -147,7 +147,17 @@ pub async fn curseforge_get_author_downloads<R: Runtime>(
         .map_err(|error| format!("Could not install CurseForge analytics capture: {error}"))?;
 
     let _ = clear_query_param(&window, RESULT_PARAM);
-    let script = DOWNLOAD_SCRAPER.replace("__PERIOD_DAYS__", &period_days.to_string());
+
+    // Traversing React fiber internals on the Authors dashboard can visit an enormous graph
+    // and block WebView2's JS thread long enough for an otherwise valid analytics read to time
+    // out. The network-capture parser plus the rendered SVG fallback are both sufficient for
+    // the downloads chart, so disable the React-internals pass in the injected scraper.
+    let script = DOWNLOAD_SCRAPER
+        .replace("__PERIOD_DAYS__", &period_days.to_string())
+        .replace(
+            "const reactPropsInspected = inspectReactChartProps();",
+            "const reactPropsInspected = 0;",
+        );
     window
         .eval(script)
         .map_err(|error| format!("Could not start CurseForge download analytics reader: {error}"))?;
