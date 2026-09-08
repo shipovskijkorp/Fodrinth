@@ -7,9 +7,11 @@ import { createApp } from 'vue'
 
 import App from '@/App.vue'
 import '@/assets/fodrinth.css'
+import '@/assets/fodrinth-projects.css'
 import { overlayScrollbarsDirective } from '@/directives/overlayScrollbars'
 import { setupErrorReporting } from '@/helpers/error-reporting'
 import { initFodrinthNavbar } from '@/helpers/fodrinth-navbar'
+import { initFodrinthProjectLayout } from '@/helpers/fodrinth-project-layout'
 import i18nPlugin from '@/plugins/i18n'
 import i18nDebugPlugin from '@/plugins/i18n-debug'
 import router from '@/routes'
@@ -44,6 +46,7 @@ async function mount() {
 	}
 	app.mount('#app')
 	initFodrinthNavbar()
+	initFodrinthProjectLayout()
 }
 
 void mount()
