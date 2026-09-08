@@ -99,6 +99,27 @@ function requireCurseForgeToken() {
 	return token
 }
 
+function curseForgeLoaderName(value) {
+	const text = String(value ?? '').trim()
+	const key = text.toLowerCase().replace(/[ _-]+/g, '')
+	const known = {
+		neoforge: 'NeoForge',
+		forge: 'Forge',
+		fabric: 'Fabric',
+		quilt: 'Quilt',
+		liteloader: 'LiteLoader',
+		rift: 'Rift',
+		bukkit: 'Bukkit',
+		spigot: 'Spigot',
+		paper: 'Paper',
+		purpur: 'Purpur',
+		folia: 'Folia',
+		velocity: 'Velocity',
+		waterfall: 'Waterfall',
+	}
+	return known[key] || text
+}
+
 export async function updateCurseForgeProject(projectId, patch) {
 	requireCurseForgeToken()
 	const id = normalizeId(projectId)
@@ -136,7 +157,7 @@ export async function uploadCurseForgeProjectFile(projectId, file, release) {
 
 	const gameVersionNames = [
 		...(release.gameVersions ?? []),
-		...(release.loaders ?? []),
+		...(release.loaders ?? []).map(curseForgeLoaderName),
 	]
 		.map((value) => String(value).trim())
 		.filter(Boolean)
