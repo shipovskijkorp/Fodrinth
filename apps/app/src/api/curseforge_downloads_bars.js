@@ -6,7 +6,7 @@
   const DAY = 86400000;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const norm = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
-  const projectKey = (value) => norm(value)
+  const key = (value) => norm(value)
     .toLowerCase()
     .replace(/\u2026|\.{3,}$/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
@@ -23,31 +23,15 @@
       return Number.isFinite(base) ? base * factor : null;
     }
     if (!/^[+-]?\d+(?:\.\d+)?$/.test(text)) return null;
-    const valueNumber = Number(text);
-    return Number.isFinite(valueNumber) ? valueNumber : null;
+    const parsed = Number(text);
+    return Number.isFinite(parsed) ? parsed : null;
   };
 
   const known = projects.map((project) => ({
     id: norm(project?.id),
     name: norm(project?.name ?? project?.title ?? project?.slug ?? project?.id),
+    allTime: toNumber(project?.allTime ?? project?.downloads ?? project?.downloadCount ?? project?.download_count),
   })).filter((project) => project.id || project.name);
-  const byName = new Map(known.filter((project) => project.name).map((project) => [projectKey(project.name), project]));
-
-  const matchProject = (value) => {
-    const key = projectKey(value);
-    if (!key) return null;
-    if (byName.has(key)) return byName.get(key);
-    let best = null;
-    let bestLength = 0;
-    for (const [candidate, project] of byName) {
-      const shared = candidate.startsWith(key) ? key.length : key.startsWith(candidate) ? candidate.length : 0;
-      if (shared >= 7 && shared > bestLength) {
-        best = project;
-        bestLength = shared;
-      }
-    }
-    return best;
-  };
 
   const periodAliases = periodDays === 7
     ? ['last 7 days', '7 days', '7d']
@@ -57,56 +41,164 @@
         ? ['last 90 days', '90 days', '90d', 'last 3 months', '3 months']
         : [`last ${periodDays} days`, `${periodDays} days`, `${periodDays}d`];
 
-  const findSection = () => {
-    const headings = Array.from(document.querySelectorAll('body *')).filter((element) => {
-      if (element.children.length > 4) return false;
+  const visible = (element) => {
+    if (!element) return false;
+    try {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    } catch (_) {
+      return true;
+    }
+  };
+
+  const matchLabel = (candidate, wanted) => {
+    const a = key(candidate);
+    const b = key(wanted);
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const shared = a.startsWith(b) ? b.length : b.startsWith(a) ? a.length : 0;
+    return shared >= 8;
+  };
+
+  const findPerProjectSection = () => {
+    const nodes = Array.from(document.querySelectorAll('body *')).filter((element) => {
+      if (element.children.length > 5) return false;
       const text = norm(element.textContent);
-      return /downloads per project/i.test(text) && !/over time/i.test(text);
+      return /downloads over time/i.test(text) && /per project/i.test(text);
     });
-    for (const heading of headings) {
+    for (const heading of nodes) {
       let node = heading;
       for (let depth = 0; depth < 12 && node; depth++, node = node.parentElement) {
-        if (node.querySelector?.('svg') && node.querySelector?.('select,button,[role="button"]')) return node;
+        if (node.querySelector?.('svg') && node.querySelector?.('select,[role="combobox"],button,[role="button"]')) return node;
       }
     }
     return null;
   };
 
-  const selectPeriod = async (root) => {
-    if (!root) return false;
-    for (const select of root.querySelectorAll('select')) {
+  const findProjectNativeSelect = (section) => {
+    if (!section) return null;
+    for (const select of section.querySelectorAll('select')) {
+      const labels = Array.from(select.options || []).map((option) => norm(option.textContent));
+      const matchesProjects = known.filter((project) => labels.some((label) => matchLabel(label, project.name))).length;
+      if (labels.some((label) => /all projects/i.test(label)) || matchesProjects >= Math.min(2, known.length)) return select;
+    }
+    return null;
+  };
+
+  const findProjectCustomPicker = (section) => {
+    if (!section) return null;
+    const controls = Array.from(section.querySelectorAll('[role="combobox"],button,[role="button"]')).filter(visible);
+    let best = null;
+    let bestScore = -1;
+    for (const control of controls) {
+      const label = norm(control.textContent || control.getAttribute('aria-label'));
+      let score = 0;
+      if (/all projects/i.test(label)) score += 100;
+      if (known.some((project) => matchLabel(label, project.name))) score += 80;
+      if (control.getAttribute('role') === 'combobox') score += 40;
+      if (/listbox|menu/i.test(control.getAttribute('aria-haspopup') || '')) score += 20;
+      const rect = control.getBoundingClientRect();
+      if (rect.width > 120 && rect.width < 500) score += 10;
+      if (score > bestScore) {
+        best = control;
+        bestScore = score;
+      }
+    }
+    return bestScore >= 40 ? best : null;
+  };
+
+  const selectProject = async (section, projectName) => {
+    const native = findProjectNativeSelect(section);
+    if (native) {
+      const option = Array.from(native.options || []).find((item) => matchLabel(item.textContent, projectName));
+      if (!option) return false;
+      if (native.value !== option.value) {
+        native.value = option.value;
+        native.dispatchEvent(new Event('input', { bubbles: true }));
+        native.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      await sleep(650);
+      return true;
+    }
+
+    const picker = findProjectCustomPicker(section);
+    if (!picker) return false;
+    const current = norm(picker.textContent || picker.getAttribute('aria-label'));
+    if (matchLabel(current, projectName)) return true;
+    picker.click();
+    await sleep(180);
+    const candidates = Array.from(document.querySelectorAll('[role="option"],[role="menuitem"],li,button')).filter(visible);
+    const option = candidates.find((element) => matchLabel(element.textContent, projectName));
+    if (!option) {
+      try { document.body.click(); } catch (_) {}
+      return false;
+    }
+    option.click();
+    await sleep(700);
+    return true;
+  };
+
+  const restoreAllProjects = async (section) => {
+    const native = findProjectNativeSelect(section);
+    if (native) {
+      const option = Array.from(native.options || []).find((item) => /all projects/i.test(norm(item.textContent)));
+      if (option && native.value !== option.value) {
+        native.value = option.value;
+        native.dispatchEvent(new Event('input', { bubbles: true }));
+        native.dispatchEvent(new Event('change', { bubbles: true }));
+        await sleep(300);
+      }
+      return;
+    }
+    const picker = findProjectCustomPicker(section);
+    if (!picker || /all projects/i.test(norm(picker.textContent))) return;
+    picker.click();
+    await sleep(150);
+    const option = Array.from(document.querySelectorAll('[role="option"],[role="menuitem"],li,button'))
+      .filter(visible)
+      .find((element) => /all projects/i.test(norm(element.textContent)));
+    if (option) option.click();
+  };
+
+  const selectPeriod = async (section) => {
+    if (!section) return false;
+    for (const select of section.querySelectorAll('select')) {
+      if (select === findProjectNativeSelect(section)) continue;
       const option = Array.from(select.options || []).find((item) => periodAliases.includes(norm(item.textContent).toLowerCase()));
       if (!option) continue;
       if (select.value !== option.value) {
         select.value = option.value;
         select.dispatchEvent(new Event('input', { bubbles: true }));
         select.dispatchEvent(new Event('change', { bubbles: true }));
-        await sleep(1400);
+        await sleep(periodDays === 90 ? 1800 : 1100);
       }
       return true;
     }
-    let controls = Array.from(root.querySelectorAll('button,[role="button"],[role="option"],[role="menuitem"]'));
+
+    let controls = Array.from(section.querySelectorAll('button,[role="button"],[role="combobox"]')).filter(visible);
     const direct = controls.find((element) => periodAliases.includes(norm(element.textContent).toLowerCase()));
     if (direct) {
       direct.click();
-      await sleep(1400);
+      await sleep(periodDays === 90 ? 1800 : 1100);
       return true;
     }
     const picker = controls.find((element) => /last \d+ days|\b\d+ days\b|\b\d+d\b|months?/i.test(norm(element.textContent)));
     if (!picker) return false;
     picker.click();
-    await sleep(250);
-    controls = Array.from(document.querySelectorAll('[role="option"],[role="menuitem"],button'));
-    const option = controls.find((element) => periodAliases.includes(norm(element.textContent).toLowerCase()));
+    await sleep(180);
+    const option = Array.from(document.querySelectorAll('[role="option"],[role="menuitem"],li,button'))
+      .filter(visible)
+      .find((element) => periodAliases.includes(norm(element.textContent).toLowerCase()));
     if (!option) return false;
     option.click();
-    await sleep(1400);
+    await sleep(periodDays === 90 ? 1800 : 1100);
     return true;
   };
 
-  const selectTotal = async (root) => {
-    if (!root) return;
-    const total = Array.from(root.querySelectorAll('button,[role="button"],[role="tab"]'))
+  const selectTotal = async (section) => {
+    if (!section) return;
+    const total = Array.from(section.querySelectorAll('button,[role="button"],[role="tab"]'))
       .find((element) => /^total$/i.test(norm(element.textContent)));
     if (!total) return;
     const selected = total.getAttribute('aria-selected') === 'true'
@@ -114,7 +206,7 @@
       || /active|selected/i.test(total.className || '');
     if (!selected) {
       total.click();
-      await sleep(900);
+      await sleep(650);
     }
   };
 
@@ -125,10 +217,8 @@
       const svg = element.ownerSVGElement;
       if (!matrix || !svg) return box;
       const corners = [
-        [box.x, box.y],
-        [box.x + box.width, box.y],
-        [box.x, box.y + box.height],
-        [box.x + box.width, box.y + box.height],
+        [box.x, box.y], [box.x + box.width, box.y],
+        [box.x, box.y + box.height], [box.x + box.width, box.y + box.height],
       ].map(([x, y]) => {
         const point = svg.createSVGPoint();
         point.x = x;
@@ -137,30 +227,40 @@
       });
       const xs = corners.map((point) => point.x);
       const ys = corners.map((point) => point.y);
-      return {
-        x: Math.min(...xs),
-        y: Math.min(...ys),
-        width: Math.max(...xs) - Math.min(...xs),
-        height: Math.max(...ys) - Math.min(...ys),
-      };
+      return { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
     } catch (_) {
       return null;
     }
   };
 
-  const filledShape = (element) => {
-    const box = transformedBox(element);
-    if (!box || box.width < 1.5 || box.height < 0.5 || box.width > 180) return null;
+  const transformedPoint = (element, point) => {
     try {
+      const matrix = element.getCTM();
+      const svg = element.ownerSVGElement;
+      if (!matrix || !svg) return point;
+      const value = svg.createSVGPoint();
+      value.x = point.x;
+      value.y = point.y;
+      return value.matrixTransform(matrix);
+    } catch (_) {
+      return point;
+    }
+  };
+
+  const lineInfo = (element) => {
+    try {
+      const length = element.getTotalLength?.();
+      const box = transformedBox(element);
+      if (!Number.isFinite(length) || !box || length < 80 || box.width < 90) return null;
       const style = getComputedStyle(element);
+      const stroke = String(style.stroke || element.getAttribute('stroke') || '').toLowerCase();
       const fill = String(style.fill || element.getAttribute('fill') || '').toLowerCase();
-      const opacity = Number.parseFloat(style.opacity || style.fillOpacity || '1');
-      if (!fill || fill === 'none' || fill === 'transparent' || fill.includes('rgba(0, 0, 0, 0)')) return null;
-      if (Number.isFinite(opacity) && opacity < 0.05) return null;
+      if (!stroke || stroke === 'none' || stroke === 'transparent' || stroke.includes('rgba(0, 0, 0, 0)')) return null;
+      if (fill && fill !== 'none' && !fill.includes('rgba(0, 0, 0, 0)')) return null;
+      return { element, length, box, stroke };
     } catch (_) {
       return null;
     }
-    return { element, box, centerX: box.x + box.width / 2 };
   };
 
   const fitYAxis = (svg, plotBox) => {
@@ -171,8 +271,8 @@
       if (!box) return null;
       const x = box.x + box.width / 2;
       const y = box.y + box.height / 2;
-      if (x > plotBox.x + Math.max(45, plotBox.width * 0.12)) return null;
-      if (y < plotBox.y - 40 || y > plotBox.y + plotBox.height + 40) return null;
+      if (x > plotBox.x - 4) return null;
+      if (y < plotBox.y - 80 || y > plotBox.y + plotBox.height + 80) return null;
       return { y, value };
     }).filter(Boolean);
     const unique = [];
@@ -194,105 +294,71 @@
     return Number.isFinite(slope) && slope < 0 ? (y) => Math.max(0, slope * y + intercept) : null;
   };
 
-  const readChart = (section) => {
-    if (!section) return { projects: [], debug: { reason: 'section-not-found' } };
-    let best = null;
-    for (const svg of section.querySelectorAll('svg')) {
-      const shapes = Array.from(svg.querySelectorAll('rect,path')).map(filledShape).filter(Boolean);
-      if (shapes.length < 1) continue;
-      const rawLabels = Array.from(svg.querySelectorAll('text')).map((element) => {
-        const project = matchProject(element.textContent);
-        if (!project) return null;
-        const box = transformedBox(element);
-        if (!box) return null;
-        return { project, box, centerX: box.x + box.width / 2, centerY: box.y + box.height / 2 };
-      }).filter(Boolean);
-      if (!rawLabels.length) continue;
-
-      // The project axis labels sit below the bars. Prefer the lowest occurrence for every
-      // project so legend labels cannot be confused with X-axis labels.
-      const labelsByProject = new Map();
-      for (const label of rawLabels) {
-        const id = label.project.id || label.project.name;
-        const old = labelsByProject.get(id);
-        if (!old || label.centerY > old.centerY) labelsByProject.set(id, label);
-      }
-      const labels = Array.from(labelsByProject.values());
-      if (!labels.length) continue;
-
-      const labelXs = labels.map((label) => label.centerX).sort((a, b) => a - b);
-      const gaps = [];
-      for (let index = 1; index < labelXs.length; index++) {
-        const gap = labelXs[index] - labelXs[index - 1];
-        if (gap > 3) gaps.push(gap);
-      }
-      gaps.sort((a, b) => a - b);
-      const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 70;
-      const radius = Math.max(12, medianGap * 0.46);
-      const nearbyShapes = shapes.filter((shape) => labels.some((label) => Math.abs(shape.centerX - label.centerX) <= radius));
-      if (!nearbyShapes.length) continue;
-
-      const minX = Math.min(...nearbyShapes.map((shape) => shape.box.x));
-      const maxX = Math.max(...nearbyShapes.map((shape) => shape.box.x + shape.box.width));
-      const minY = Math.min(...nearbyShapes.map((shape) => shape.box.y));
-      const maxY = Math.max(...nearbyShapes.map((shape) => shape.box.y + shape.box.height));
-      const plotBox = { x: minX, y: minY, width: Math.max(1, maxX - minX), height: Math.max(1, maxY - minY) };
-      const yToValue = fitYAxis(svg, plotBox);
-      const score = labels.length * 1000 + nearbyShapes.length * 30 + (yToValue ? 1000 : 0);
-      if (!best || score > best.score) best = { svg, labels, shapes: nearbyShapes, radius, plotBox, yToValue, score };
+  const sampleCandidate = (candidate, yToValue) => {
+    const dense = [];
+    const steps = Math.max(900, periodDays * 22);
+    for (let index = 0; index <= steps; index++) {
+      try {
+        const local = candidate.element.getPointAtLength((candidate.length * index) / steps);
+        dense.push(transformedPoint(candidate.element, local));
+      } catch (_) {}
     }
-
-    if (!best || !best.yToValue) {
-      return { projects: [], debug: { reason: best ? 'y-axis-not-readable' : 'chart-svg-not-mapped', labels: best?.labels?.length ?? 0, bars: best?.shapes?.length ?? 0 } };
+    if (dense.length < 10) return null;
+    dense.sort((a, b) => a.x - b.x);
+    const minX = dense[0].x;
+    const maxX = dense[dense.length - 1].x;
+    if (!(maxX > minX)) return null;
+    const values = [];
+    let cursor = 0;
+    for (let day = 0; day < periodDays; day++) {
+      const x = periodDays === 1 ? (minX + maxX) / 2 : minX + ((maxX - minX) * day) / (periodDays - 1);
+      while (cursor + 1 < dense.length && Math.abs(dense[cursor + 1].x - x) <= Math.abs(dense[cursor].x - x)) cursor++;
+      values.push(Math.max(0, Math.round(yToValue(dense[cursor].y))));
     }
-
-    const mapped = [];
-    for (const label of best.labels) {
-      const nearby = best.shapes.filter((shape) => Math.abs(shape.centerX - label.centerX) <= best.radius);
-      if (!nearby.length) {
-        mapped.push({ id: label.project.id || label.project.name, name: label.project.name, period: 0, current: 0 });
-        continue;
-      }
-      // The chart renders Total and Unique side by side. Total cannot be smaller than Unique,
-      // therefore the tallest bar in the project slot is the total-download bar.
-      const totalBar = [...nearby].sort((left, right) => right.box.height - left.box.height)[0];
-      const value = Math.max(0, Math.round(best.yToValue(totalBar.box.y)));
-      mapped.push({ id: label.project.id || label.project.name, name: label.project.name, period: value, current: value });
-    }
-
-    return {
-      projects: mapped,
-      debug: {
-        reason: null,
-        labels: best.labels.length,
-        bars: best.shapes.length,
-        mapped: mapped.length,
-      },
-    };
+    return values;
   };
 
-  const scaleSeries = (result, target) => {
-    if (!Array.isArray(result?.series) || !result.series.length || !(target >= 0)) return;
-    const now = Date.now();
-    const start = now - (periodDays + 1) * DAY;
-    let sum = 0;
-    const indexes = [];
-    for (let index = 0; index < result.series.length; index++) {
-      const row = result.series[index];
-      const timestamp = new Date(row?.date ?? row?.timestamp ?? row?.time).getTime();
-      const value = toNumber(row?.total ?? row?.value);
-      if (!Number.isFinite(timestamp) || timestamp < start || timestamp > now + DAY || value == null) continue;
-      sum += Math.max(0, value);
-      indexes.push(index);
+  const readSelectedProjectSeries = (section) => {
+    if (!section) return null;
+    let best = null;
+    for (const svg of section.querySelectorAll('svg')) {
+      const lines = Array.from(svg.querySelectorAll('path[d],polyline[points]')).map(lineInfo).filter(Boolean);
+      if (!lines.length) continue;
+      for (const line of lines) {
+        const yToValue = fitYAxis(svg, line.box);
+        if (!yToValue) continue;
+        const values = sampleCandidate(line, yToValue);
+        if (!values) continue;
+        const total = values.reduce((sum, value) => sum + value, 0);
+        const score = line.box.width * 10 + line.length + total * 0.01;
+        if (!best || score > best.score) best = { values, total, score, lineCount: lines.length };
+      }
     }
-    if (!(sum > 0) || !indexes.length) return;
-    const ratio = target / sum;
-    for (const index of indexes) {
-      const row = result.series[index];
-      const value = toNumber(row?.total ?? row?.value) ?? 0;
-      row.total = Math.max(0, value * ratio);
-      if ('value' in row) row.value = row.total;
+    return best;
+  };
+
+  const waitForSeries = async (section, previousSignature = '') => {
+    let latest = null;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      try { window.dispatchEvent(new Event('resize')); } catch (_) {}
+      latest = readSelectedProjectSeries(section);
+      if (latest) {
+        const signature = latest.values.join(',');
+        if (!previousSignature || signature !== previousSignature || attempt >= 4) return { ...latest, signature };
+      }
+      await sleep(250);
     }
+    return latest ? { ...latest, signature: latest.values.join(',') } : null;
+  };
+
+  const dateRows = (totals) => {
+    const end = new Date();
+    end.setHours(12, 0, 0, 0);
+    const start = new Date(end.getTime() - (periodDays - 1) * DAY);
+    return totals.map((total, index) => {
+      const date = new Date(start.getTime() + index * DAY);
+      return { date: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`, total };
+    });
   };
 
   const run = async () => {
@@ -302,47 +368,68 @@
       return;
     }
 
-    let section = findSection();
-    if (section) {
-      await selectPeriod(section);
-      await selectTotal(section);
-      try { section.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (_) {}
-      try { window.dispatchEvent(new Event('resize')); } catch (_) {}
-    }
-
-    let reading = { projects: [], debug: { reason: 'not-rendered' } };
-    for (let attempt = 0; attempt < 30; attempt++) {
-      section = findSection();
-      if (section) reading = readChart(section);
-      if (reading.projects.length > 0) break;
-      await sleep(400);
-      try { window.dispatchEvent(new Event('resize')); } catch (_) {}
-    }
-
-    const byId = new Map(reading.projects.map((project) => [String(project.id), project]));
-    const normalized = known.map((project) => byId.get(project.id || project.name)).filter(Boolean);
-    const complete = normalized.length === known.length && known.length > 0;
-    if (complete) {
-      const total = normalized.reduce((sum, project) => sum + Math.max(0, toNumber(project.period) ?? 0), 0);
-      result.projects = normalized;
-      result.current = total;
-      scaleSeries(result, total);
-    } else if (normalized.length > 0) {
-      result.projects = normalized;
-    } else {
-      // Do not leak generic series names from the broad capture parser into the public project
-      // table. If the exact project chart cannot be read, expose no fake period rows and let the
-      // frontend mark the snapshot incomplete/retry it later.
+    let section = findPerProjectSection();
+    if (!section) {
       result.projects = [];
+      result.debug = { ...(result.debug ?? {}), projectPeriodSource: null, projectPeriodError: 'per-project-chart-not-found' };
+      window.__FODRINTH_CF_DOWNLOAD_PROJECTS_AUGMENTED__ = true;
+      return;
+    }
+
+    try { section.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (_) {}
+    try { window.dispatchEvent(new Event('resize')); } catch (_) {}
+    await selectPeriod(section);
+    await selectTotal(section);
+    await sleep(450);
+
+    const mapped = [];
+    const aggregate = Array(periodDays).fill(0);
+    const failures = [];
+    let previousSignature = '';
+
+    for (const project of known) {
+      section = findPerProjectSection() ?? section;
+      const selected = await selectProject(section, project.name);
+      if (!selected) {
+        failures.push({ project: project.name, reason: 'project-option-not-found' });
+        continue;
+      }
+      const reading = await waitForSeries(section, previousSignature);
+      if (!reading) {
+        failures.push({ project: project.name, reason: 'series-not-readable' });
+        continue;
+      }
+      previousSignature = reading.signature;
+      const total = reading.total;
+      if (project.allTime != null && total > project.allTime + Math.max(2, project.allTime * 0.03)) {
+        failures.push({ project: project.name, reason: `period-exceeds-lifetime:${total}>${project.allTime}` });
+        continue;
+      }
+      mapped.push({ id: project.id || project.name, name: project.name, period: total, current: total });
+      for (let index = 0; index < aggregate.length; index++) aggregate[index] += reading.values[index] ?? 0;
+    }
+
+    await restoreAllProjects(section);
+
+    const complete = mapped.length === known.length;
+    if (complete) {
+      const total = mapped.reduce((sum, project) => sum + Math.max(0, toNumber(project.period) ?? 0), 0);
+      result.projects = mapped;
+      result.current = total;
+      result.series = dateRows(aggregate);
+      if (periodDays === 90) result.previous = null;
+    } else {
+      result.projects = mapped;
     }
 
     result.debug = {
       ...(result.debug ?? {}),
       knownProjects: known.length,
-      matchedProjectPeriods: normalized.length,
+      matchedProjectPeriods: mapped.length,
       projectPeriodsComplete: complete,
-      projectPeriodSource: complete ? 'downloads-per-project-bars' : null,
-      projectBars: reading.debug,
+      projectPeriodSource: complete ? 'per-project-selector-series' : null,
+      projectPeriodFailures: failures,
+      aggregateSeriesPoints: complete ? aggregate.length : 0,
     };
     window.__FODRINTH_CF_DOWNLOAD_PROJECTS_AUGMENTED__ = true;
   };
@@ -351,7 +438,7 @@
     const result = window.__FODRINTH_CF_DOWNLOAD_V3_RESULT__;
     if (result && typeof result === 'object') {
       result.projects = [];
-      result.debug = { ...(result.debug ?? {}), projectBarReaderError: String(error?.stack || error?.message || error) };
+      result.debug = { ...(result.debug ?? {}), projectPeriodReaderError: String(error?.stack || error?.message || error) };
     }
     window.__FODRINTH_CF_DOWNLOAD_PROJECTS_AUGMENTED__ = true;
   });
