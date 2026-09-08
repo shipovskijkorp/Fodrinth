@@ -149,14 +149,9 @@ pub async fn curseforge_get_author_downloads<R: Runtime>(
     let _ = clear_query_param(&window, RESULT_PARAM);
     let _ = clear_query_param(&window, STAGE_PARAM);
 
-    // The React fiber tree on the Authors dashboard is enormous. Walking it can block the
-    // WebView2 JS thread for longer than the entire analytics timeout. Network captures and
-    // the rendered chart are enough, so keep the scraper bounded and observable.
-    //
-    // 90-day dashboard payloads are substantially larger than 7/30-day payloads. The generic
-    // recursive candidate finder can both become expensive and mistake a single project line
-    // for the global line. For 90d we therefore use a bounded project-aware pass over captured
-    // JSON, aggregate project/day rows for the overall chart, and return period totals per mod.
+    // Keep the generic reader bounded. The 90-day view is special on the new Authors
+    // dashboard: unlike 7/30 days it has no KPI tile, so both the aggregate and per-project
+    // period totals must be reconstructed from the selected chart/network payload.
     let script = DOWNLOAD_SCRAPER
         .replace("__PERIOD_DAYS__", &period_days.to_string())
         .replace(
@@ -169,11 +164,11 @@ pub async fn curseforge_get_author_downloads<R: Runtime>(
         )
         .replace(
             "await selectPeriod();",
-            "window.__FODRINTH_CF_DOWNLOAD_STAGE__ = 'select-period'; await selectPeriod();",
+            "window.__FODRINTH_CF_DOWNLOAD_STAGE__ = 'select-period'; await selectPeriod(); if (periodDays === 90) await sleep(3200);",
         )
         .replace(
             "await selectTotal();",
-            "window.__FODRINTH_CF_DOWNLOAD_STAGE__ = 'select-total'; await selectTotal();",
+            "window.__FODRINTH_CF_DOWNLOAD_STAGE__ = 'select-total'; await selectTotal(); if (periodDays === 90) await sleep(1800);",
         )
         .replace(
             "const captured = captures();",
@@ -299,6 +294,110 @@ pub async fn curseforge_get_author_downloads<R: Runtime>(
       for (const capture of captured) visit(capture.value, capture.url, 0);
     }
     const reactPropsInspected = 0;"#,
+        )
+        .replace(
+            r#"    if (currentSeriesPoints < Math.min(periodDays, 5)) {
+      const rendered = extractRenderedSeries(periodCard?.value ?? null);
+      if (rendered.length) series = rendered;
+    }"#,
+            r#"    if (currentSeriesPoints < Math.min(periodDays, 5)) {
+      const rendered = extractRenderedSeries(periodCard?.value ?? null);
+      if (rendered.length) series = rendered;
+    }
+
+    // The 90-day API response has changed shape more than once. If it cannot be associated
+    // with projects, read the already-rendered per-project chart itself. Each colored line is
+    // sampled against the chart's Y axis; those line totals become the per-project 90d values,
+    // while their point-wise sum becomes the aggregate series used by Fodrinth's graph.
+    if (periodDays === 90 && focusedProjectPeriods.length === 0) {
+      window.__FODRINTH_CF_DOWNLOAD_STAGE__ = 'render-project-series';
+      const section = findChartSection(true) ?? findChartSection(false);
+      if (section) {
+        const svgs = Array.from(section.querySelectorAll('svg'));
+        let bestRendered = null;
+        for (const svg of svgs) {
+          const geometries = Array.from(svg.querySelectorAll('path[d],polyline[points]')).map(geometryInfo).filter(Boolean);
+          if (!geometries.length) continue;
+          const maxWidth = Math.max(...geometries.map((item) => item.box.width));
+          const wide = geometries.filter((item) => item.box.width >= Math.max(70, maxWidth * 0.35));
+          if (!wide.length) continue;
+
+          // Recharts/Highcharts can emit more than one geometry for a series. Keep the longest
+          // path for each stroke color so a filled/hover duplicate cannot double the totals.
+          const byColor = new Map();
+          for (const item of wide) {
+            const color = String(item.style.stroke || '').trim();
+            if (!color || color === 'none' || color === 'transparent') continue;
+            const old = byColor.get(color);
+            if (!old || item.length > old.length) byColor.set(color, item);
+          }
+          const lines = Array.from(byColor.values());
+          if (!lines.length) continue;
+          const minX = Math.min(...lines.map((item) => item.box.x));
+          const maxX = Math.max(...lines.map((item) => item.box.x + item.box.width));
+          const minY = Math.min(...lines.map((item) => item.box.y));
+          const maxY = Math.max(...lines.map((item) => item.box.y + item.box.height));
+          const plotBox = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+          const score = plotBox.width * 4 + lines.length * 400 + plotBox.height;
+          if (!bestRendered || score > bestRendered.score) bestRendered = { svg, lines, plotBox, score };
+        }
+
+        if (bestRendered) {
+          const yToValue = fitYAxis(bestRendered.svg, bestRendered.plotBox);
+          const lineValues = bestRendered.lines.map((line) => ({
+            line,
+            color: String(line.style.stroke || '').trim(),
+            values: sampleGeometry(line, bestRendered.plotBox, yToValue).map((value) => Math.max(0, Math.round(value || 0))),
+          }));
+
+          const lineColors = new Set(lineValues.map((item) => item.color));
+          const ignoredLegend = /^(?:all projects|90 days|last 90 days|90d|downloads|total|unique|statistics|minecraft|minecraft java|total\/unique downloads over time(?: \(per project\))?)$/i;
+          const legends = [];
+          for (const leaf of leafElements(section)) {
+            const name = norm(leaf.textContent);
+            if (!name || name.length > 140 || ignoredLegend.test(name) || toNumber(name) != null || toDate(name)) continue;
+            let markerColor = null;
+            let parent = leaf.parentElement;
+            for (let depth = 0; depth < 4 && parent && !markerColor; depth++, parent = parent.parentElement) {
+              const candidates = [parent, ...Array.from(parent.querySelectorAll('span,div,svg')).slice(0, 24)];
+              for (const candidate of candidates) {
+                if (candidate === leaf) continue;
+                let rect;
+                try { rect = candidate.getBoundingClientRect(); } catch (_) { continue; }
+                if (!rect || rect.width < 3 || rect.height < 3 || rect.width > 28 || rect.height > 28) continue;
+                const style = getComputedStyle(candidate);
+                for (const color of [style.backgroundColor, style.borderTopColor, style.color, style.fill, style.stroke]) {
+                  const normalized = String(color || '').trim();
+                  if (lineColors.has(normalized)) { markerColor = normalized; break; }
+                }
+                if (markerColor) break;
+              }
+            }
+            if (markerColor && !legends.some((entry) => entry.color === markerColor)) legends.push({ name, color: markerColor });
+          }
+
+          const start = new Date();
+          start.setHours(12, 0, 0, 0);
+          start.setDate(start.getDate() - (periodDays - 1));
+          const aggregate = Array(periodDays).fill(0);
+          for (let index = 0; index < lineValues.length; index++) {
+            const item = lineValues[index];
+            for (let day = 0; day < item.values.length; day++) aggregate[day] += item.values[day] || 0;
+            const legend = legends.find((entry) => entry.color === item.color) ?? legends[index] ?? null;
+            const name = legend?.name || `CurseForge project ${index + 1}`;
+            const period = item.values.reduce((sum, value) => sum + Math.max(0, value || 0), 0);
+            focusedProjectPeriods.push({ id: name, name, period, current: period });
+          }
+          if (aggregate.some((value) => value > 0)) {
+            series = aggregate.map((value, index) => ({
+              date: new Date(start.getTime() + index * DAY).toISOString(),
+              total: Math.max(0, value || 0),
+              unique: null,
+            }));
+          }
+        }
+      }
+    }"#,
         )
         .replace(
             "const currentSeriesPoints = series.filter((row) => {",
