@@ -11,6 +11,7 @@ const PROJECTS_SCRAPER: &str = r###"
 (() => {
   window.__FODRINTH_CF_PROJECTS_RESULT__ = null;
 
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const norm = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
   const number = (value) => {
     if (typeof value === 'number') return Number.isFinite(value) ? value : null;
@@ -186,26 +187,34 @@ const PROJECTS_SCRAPER: &str = r###"
   };
 
   const run = async () => {
-    const body = norm(document.body?.innerText);
-    const looksLoggedOut = /sign in|log in/i.test(body) && !/projects|dashboard|rewards/i.test(body);
-    if (looksLoggedOut) {
-      window.__FODRINTH_CF_PROJECTS_RESULT__ = {
-        connected: false,
-        needsLogin: true,
-        projects: [],
-      };
-      return;
-    }
+    let capturedCount = 0;
 
-    const captured = captures();
-    for (const capture of captured) inspect(capture.value, capture.url, 0);
-    readDom();
+    for (let attempt = 0; attempt < 28; attempt++) {
+      const body = norm(document.body?.innerText);
+      const looksLoggedOut = /sign in|log in/i.test(body) && !/projects|dashboard|rewards/i.test(body);
+      if (looksLoggedOut) {
+        window.__FODRINTH_CF_PROJECTS_RESULT__ = {
+          connected: false,
+          needsLogin: true,
+          projects: [],
+        };
+        return;
+      }
+
+      const captured = captures();
+      capturedCount = Math.max(capturedCount, captured.length);
+      for (const capture of captured) inspect(capture.value, capture.url, 0);
+      readDom();
+
+      if (projects.size > 0) break;
+      await sleep(300);
+    }
 
     window.__FODRINTH_CF_PROJECTS_RESULT__ = {
       connected: true,
       needsLogin: false,
       projects: Array.from(projects.values()).sort((a, b) => a.name.localeCompare(b.name)),
-      capturesSeen: captured.length,
+      capturesSeen: capturedCount,
     };
   };
 
@@ -232,7 +241,10 @@ fn js_result_to_value(raw: String) -> Value {
     }
 }
 
-async fn eval_json<R: Runtime>(window: &WebviewWindow<R>, script: String) -> Result<Value, String> {
+async fn eval_json<R: Runtime>(
+    window: &WebviewWindow<R>,
+    script: String,
+) -> Result<Value, String> {
     let (sender, receiver) = tokio::sync::oneshot::channel::<String>();
     let sender = Arc::new(Mutex::new(Some(sender)));
     let callback_sender = sender.clone();
