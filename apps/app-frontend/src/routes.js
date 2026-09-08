@@ -13,11 +13,7 @@ export default new createRouter({
 		{
 			path: '/projects',
 			name: 'Creator projects',
-			component: () => import('@/pages/FodrinthCreatorPlaceholder.vue'),
-			props: {
-				title: 'Projects',
-				description: 'Unified Modrinth and CurseForge project management will live here.',
-			},
+			component: () => import('@/pages/Projects.vue'),
 		},
 		{
 			path: '/analytics',
