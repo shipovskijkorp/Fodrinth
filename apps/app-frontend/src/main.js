@@ -9,6 +9,7 @@ import App from '@/App.vue'
 import '@/assets/fodrinth.css'
 import { overlayScrollbarsDirective } from '@/directives/overlayScrollbars'
 import { setupErrorReporting } from '@/helpers/error-reporting'
+import { initFodrinthNavbar } from '@/helpers/fodrinth-navbar'
 import i18nPlugin from '@/plugins/i18n'
 import i18nDebugPlugin from '@/plugins/i18n-debug'
 import router from '@/routes'
@@ -42,6 +43,7 @@ async function mount() {
 		app.use(new VueScanPlugin({ enabled: true, showOverlay: true, log: false, playSound: false }))
 	}
 	app.mount('#app')
+	initFodrinthNavbar()
 }
 
 void mount()

@@ -13,3 +13,14 @@
 .app-sidebar-scrollable {
 	padding-bottom: 0 !important;
 }
+
+.fodrinth-curseforge-auth {
+	cursor: pointer;
+	text-decoration: none;
+}
+
+.fodrinth-curseforge-auth svg {
+	width: 1em;
+	height: 1em;
+	color: #f16436 !important;
+}
