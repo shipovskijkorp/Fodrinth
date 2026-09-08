@@ -9,6 +9,7 @@ import App from '@/App.vue'
 import '@/assets/fodrinth.css'
 import '@/assets/fodrinth-projects.css'
 import { overlayScrollbarsDirective } from '@/directives/overlayScrollbars'
+import { startCreatorAnalyticsBackground } from '@/helpers/creator-analytics-cache.js'
 import { setupErrorReporting } from '@/helpers/error-reporting'
 import { initFodrinthNavbar } from '@/helpers/fodrinth-navbar'
 import { initFodrinthProjectLayout } from '@/helpers/fodrinth-project-layout'
@@ -47,6 +48,7 @@ async function mount() {
 	app.mount('#app')
 	initFodrinthNavbar()
 	initFodrinthProjectLayout()
+	startCreatorAnalyticsBackground()
 }
 
 void mount()
