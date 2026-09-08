@@ -2,9 +2,18 @@ import router from '@/routes'
 
 const SORT_BY_COLUMN = ['name', 'provider', 'period', 'alltime']
 const NUMERIC_SORTS = new Set(['period', 'alltime'])
+const PROVIDER_RANK = { Sync: 0, Modrinth: 1, CurseForge: 2 }
 
 let observer = null
 let scheduled = false
+let activeSort = 'provider'
+let sortDirection = 'asc'
+let initializedSort = false
+let suppressSelectSync = false
+
+const numberParts = new Intl.NumberFormat().formatToParts(12345.6)
+const numberGroup = numberParts.find((part) => part.type === 'group')?.value ?? ''
+const numberDecimal = numberParts.find((part) => part.type === 'decimal')?.value ?? '.'
 
 function isAnalyticsRoute() {
 	return router.currentRoute.value?.path === '/analytics'
@@ -24,6 +33,76 @@ function findSortSelect(section) {
 	)
 }
 
+function defaultDirection(sortId) {
+	return NUMERIC_SORTS.has(sortId) ? 'desc' : 'asc'
+}
+
+function escapeRegExp(value) {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function parseDisplayedNumber(value) {
+	let normalized = String(value ?? '').trim()
+	if (numberGroup) normalized = normalized.replace(new RegExp(escapeRegExp(numberGroup), 'g'), '')
+	if (numberDecimal && numberDecimal !== '.') {
+		normalized = normalized.replace(new RegExp(escapeRegExp(numberDecimal), 'g'), '.')
+	}
+	normalized = normalized.replace(/[^0-9+.-]/g, '')
+	const number = Number.parseFloat(normalized)
+	return Number.isFinite(number) ? number : null
+}
+
+function projectName(row) {
+	return row.cells?.[0]?.textContent?.trim() ?? ''
+}
+
+function compareRows(left, right, sortId, direction) {
+	const columnIndex = SORT_BY_COLUMN.indexOf(sortId)
+	if (columnIndex < 0) return 0
+	const leftText = left.cells?.[columnIndex]?.textContent?.trim() ?? ''
+	const rightText = right.cells?.[columnIndex]?.textContent?.trim() ?? ''
+	const directionFactor = direction === 'desc' ? -1 : 1
+	let result = 0
+
+	if (NUMERIC_SORTS.has(sortId)) {
+		const leftNumber = parseDisplayedNumber(leftText)
+		const rightNumber = parseDisplayedNumber(rightText)
+		if (leftNumber == null && rightNumber != null) return 1
+		if (leftNumber != null && rightNumber == null) return -1
+		if (leftNumber != null && rightNumber != null) result = (leftNumber - rightNumber) * directionFactor
+	} else if (sortId === 'provider') {
+		const leftRank = PROVIDER_RANK[leftText] ?? 99
+		const rightRank = PROVIDER_RANK[rightText] ?? 99
+		result = leftRank !== rightRank
+			? (leftRank - rightRank) * directionFactor
+			: leftText.localeCompare(rightText, undefined, { sensitivity: 'base' }) * directionFactor
+	} else {
+		result = leftText.localeCompare(rightText, undefined, { sensitivity: 'base' }) * directionFactor
+	}
+
+	if (result !== 0) return result
+	return projectName(left).localeCompare(projectName(right), undefined, { sensitivity: 'base' })
+}
+
+function sortRows(section) {
+	const tbody = section.querySelector('table tbody')
+	if (!tbody) return
+	const rows = [...tbody.querySelectorAll(':scope > tr')]
+	if (rows.length < 2) return
+
+	const sorted = rows
+		.map((row, index) => ({ row, index }))
+		.sort((left, right) =>
+			compareRows(left.row, right.row, activeSort, sortDirection) || left.index - right.index,
+		)
+		.map((entry) => entry.row)
+
+	if (sorted.every((row, index) => row === rows[index])) return
+	const fragment = document.createDocumentFragment()
+	for (const row of sorted) fragment.appendChild(row)
+	tbody.appendChild(fragment)
+}
+
 function ensureStyles() {
 	if (document.getElementById('fodrinth-analytics-sort-style')) return
 	const style = document.createElement('style')
@@ -37,36 +116,62 @@ function ensureStyles() {
 			user-select: none;
 			transition: color 120ms ease, background-color 120ms ease;
 		}
-		.fodrinth-sortable-header:hover {
+		.fodrinth-sortable-header:hover,
+		.fodrinth-sortable-header:focus-visible {
 			color: var(--color-contrast, #fff) !important;
 			background: color-mix(in srgb, var(--color-surface-4) 55%, transparent);
+			outline: none;
 		}
 		.fodrinth-sortable-header.fodrinth-sort-active {
 			color: var(--color-contrast, #fff) !important;
 		}
 		.fodrinth-sort-indicator {
 			display: inline-block;
+			min-width: 0.9em;
 			margin-left: 0.35rem;
-			font-size: 0.8em;
-			font-weight: 700;
+			font-size: 0.9em;
+			font-weight: 800;
 			color: var(--color-brand, #1bd96a);
 		}
 	`
 	document.head.appendChild(style)
 }
 
+function activateSort(sortId, select) {
+	if (activeSort === sortId) {
+		sortDirection = sortDirection === 'asc' ? 'desc' : 'asc'
+	} else {
+		activeSort = sortId
+		sortDirection = defaultDirection(sortId)
+	}
+
+	if (select.value !== sortId && [...select.options].some((option) => option.value === sortId)) {
+		suppressSelectSync = true
+		select.value = sortId
+		select.dispatchEvent(new Event('change', { bubbles: true }))
+	}
+	schedulePatch()
+}
+
 function updateHeaders(section, select) {
 	const headers = [...section.querySelectorAll('table thead th')]
-	const activeSort = select.value || 'provider'
 
 	headers.forEach((header, index) => {
 		const sortId = SORT_BY_COLUMN[index]
 		if (!sortId) return
 
+		if (!header.dataset.fodrinthSortLabel) {
+			header.dataset.fodrinthSortLabel = header.textContent?.trim() ?? sortId
+		}
+		const label = header.dataset.fodrinthSortLabel
 		header.classList.add('fodrinth-sortable-header')
 		header.dataset.fodrinthSort = sortId
-		header.title = `Sort by ${header.textContent?.trim() ?? sortId}`
+		header.tabIndex = 0
+		header.title = activeSort === sortId
+			? `Sort ${label} ${sortDirection === 'asc' ? 'descending' : 'ascending'}`
+			: `Sort by ${label}`
 		header.classList.toggle('fodrinth-sort-active', activeSort === sortId)
+		header.setAttribute('aria-sort', activeSort === sortId ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none')
 
 		let indicator = header.querySelector(':scope > .fodrinth-sort-indicator')
 		if (activeSort === sortId) {
@@ -75,20 +180,24 @@ function updateHeaders(section, select) {
 				indicator.className = 'fodrinth-sort-indicator'
 				header.appendChild(indicator)
 			}
-			indicator.textContent = NUMERIC_SORTS.has(sortId) ? '↓' : '↑'
+			indicator.textContent = sortDirection === 'asc' ? '↑' : '↓'
 		} else {
 			indicator?.remove()
 		}
 
 		if (header.dataset.fodrinthSortBound === 'true') return
 		header.dataset.fodrinthSortBound = 'true'
-		header.addEventListener('click', () => {
+		const trigger = () => {
 			const currentSection = findComparisonSection()
 			const currentSelect = currentSection ? findSortSelect(currentSection) : null
 			if (!currentSelect || ![...currentSelect.options].some((option) => option.value === sortId)) return
-			currentSelect.value = sortId
-			currentSelect.dispatchEvent(new Event('change', { bubbles: true }))
-			queueMicrotask(schedulePatch)
+			activateSort(sortId, currentSelect)
+		}
+		header.addEventListener('click', trigger)
+		header.addEventListener('keydown', (event) => {
+			if (event.key !== 'Enter' && event.key !== ' ') return
+			event.preventDefault()
+			trigger()
 		})
 	})
 }
@@ -103,7 +212,21 @@ function patch() {
 
 	ensureStyles()
 	select.classList.add('fodrinth-analytics-sort-select')
+
+	const selectSort = select.value || 'provider'
+	if (!initializedSort) {
+		activeSort = selectSort
+		sortDirection = defaultDirection(activeSort)
+		initializedSort = true
+	} else if (suppressSelectSync) {
+		suppressSelectSync = false
+	} else if (selectSort !== activeSort) {
+		activeSort = selectSort
+		sortDirection = defaultDirection(activeSort)
+	}
+
 	updateHeaders(section, select)
+	sortRows(section)
 }
 
 function schedulePatch() {
