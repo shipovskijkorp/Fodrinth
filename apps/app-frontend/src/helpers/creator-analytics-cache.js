@@ -16,6 +16,7 @@ const PERIODIC_CHECK_MS = 5 * 60 * 1000
 const LOW_LOAD_INTERACTION_MS = 12 * 1000
 const STARTUP_DELAY_MS = 1200
 const RETRY_DELAY_MS = 45 * 1000
+const CURSEFORGE_TIMEOUT_MS = 60 * 1000
 
 const refreshes = new Map()
 let curseForgeQueue = Promise.resolve()
@@ -119,9 +120,6 @@ function isProviderFresh(provider) {
 }
 
 function isPeriodFresh(snapshot) {
-	// A period is only complete when both provider states have been resolved. Previously a
-	// fast Modrinth response could mark the whole period fresh while CurseForge was still
-	// loading, which made the UI cache a false "not included" state.
 	return isProviderFresh(snapshot?.modrinth) && isProviderFresh(snapshot?.curseforge)
 }
 
@@ -255,12 +253,26 @@ async function fetchModrinthAnalytics(periodDays) {
 	}
 }
 
+function withTimeout(promise, timeoutMs, label) {
+	let timer = null
+	const timeout = new Promise((_, reject) => {
+		timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs)
+	})
+	return Promise.race([promise, timeout]).finally(() => {
+		if (timer != null) clearTimeout(timer)
+	})
+}
+
 function enqueueCurseForge(periodDays) {
 	const job = curseForgeQueue
 		.catch(() => undefined)
 		.then(async () => {
 			const attemptedAt = Date.now()
-			const analytics = await getCurseForgeAuthorAnalytics(periodDays)
+			const analytics = await withTimeout(
+				getCurseForgeAuthorAnalytics(periodDays),
+				CURSEFORGE_TIMEOUT_MS,
+				`CurseForge ${periodDays}d analytics`,
+			)
 			return {
 				updatedAt: Date.now(),
 				lastAttemptAt: attemptedAt,
@@ -279,7 +291,6 @@ function errorMessage(error) {
 function failedProvider(previous, error) {
 	return {
 		...(previous ?? {}),
-		// Keep the last successful updatedAt so stale data remains visible but is still retried.
 		updatedAt: Number(previous?.updatedAt) || 0,
 		lastAttemptAt: Date.now(),
 		error: errorMessage(error),
@@ -296,21 +307,31 @@ export async function refreshCreatorAnalyticsPeriod(periodDays = 30, { force = f
 
 	const promise = (async () => {
 		const previous = getCreatorAnalyticsSnapshot(days)
-		const [modrinthResult, curseForgeResult] = await Promise.allSettled([
-			fetchModrinthAnalytics(days),
-			enqueueCurseForge(days),
-		])
 
-		const modrinth = modrinthResult.status === 'fulfilled'
-			? modrinthResult.value
-			: failedProvider(previous.modrinth, modrinthResult.reason)
-		const curseforge = curseForgeResult.status === 'fulfilled'
-			? curseForgeResult.value
-			: failedProvider(previous.curseforge, curseForgeResult.reason)
+		const modrinthTask = fetchModrinthAnalytics(days)
+			.then((modrinth) => {
+				persistPeriod(days, { modrinth })
+				return modrinth
+			})
+			.catch((error) => {
+				persistPeriod(days, { modrinth: failedProvider(previous.modrinth, error) })
+				throw error
+			})
 
-		// Commit the period atomically. Analytics.vue never observes a state where only the
-		// fast provider exists while CurseForge is still scraping its hidden Authors webview.
-		persistPeriod(days, { modrinth, curseforge })
+		const curseForgeTask = enqueueCurseForge(days)
+			.then((curseforge) => {
+				persistPeriod(days, { curseforge })
+				return curseforge
+			})
+			.catch((error) => {
+				persistPeriod(days, { curseforge: failedProvider(previous.curseforge, error) })
+				throw error
+			})
+
+		// Providers are intentionally committed independently. The UI can show Modrinth as soon
+		// as it arrives instead of being held hostage by the slower hidden CurseForge webview.
+		// We still wait here so startup keeps the requested 30d -> 90d -> 7d ordering.
+		await Promise.allSettled([modrinthTask, curseForgeTask])
 		return getCreatorAnalyticsSnapshot(days)
 	})()
 
@@ -398,7 +419,8 @@ export function startCreatorAnalyticsBackground() {
 	}
 
 	// Warm startup analytics sequentially in the requested priority order 30d -> 90d -> 7d.
-	// 90d starts as soon as 30d has fully resolved for both providers.
+	// Each provider streams into the cache independently, while the next period waits for the
+	// current period to resolve or hit the bounded CurseForge timeout.
 	scheduleStartupWarmup()
 
 	periodicTimer = window.setInterval(() => {
