@@ -15,6 +15,7 @@ const FRESH_FOR_MS = 15 * 60 * 1000
 const PERIODIC_CHECK_MS = 5 * 60 * 1000
 const LOW_LOAD_INTERACTION_MS = 12 * 1000
 const STARTUP_DELAY_MS = 1200
+const RETRY_DELAY_MS = 45 * 1000
 
 const refreshes = new Map()
 let curseForgeQueue = Promise.resolve()
@@ -116,6 +117,19 @@ function providerAge(provider) {
 function isPeriodFresh(snapshot) {
 	const providers = [snapshot?.modrinth, snapshot?.curseforge].filter(Boolean)
 	return providers.length > 0 && providers.every((provider) => providerAge(provider) < FRESH_FOR_MS)
+}
+
+async function cacheMatchesCurrentModrinthUser(snapshot) {
+	try {
+		const credentials = await getModrinthCredentials()
+		const currentUserId = credentials?.user_id ? String(credentials.user_id) : null
+		const cachedUserId = snapshot?.modrinth?.authenticated && snapshot?.modrinth?.userId
+			? String(snapshot.modrinth.userId)
+			: null
+		return currentUserId === cachedUserId
+	} catch {
+		return true
+	}
 }
 
 async function fetchJson(url, session, options = {}) {
@@ -256,37 +270,47 @@ function errorMessage(error) {
 	return error instanceof Error ? error.message : String(error)
 }
 
+function persistProviderFailure(periodDays, providerName, error) {
+	const old = getCreatorAnalyticsSnapshot(periodDays)?.[providerName] ?? {}
+	persistPeriod(periodDays, {
+		[providerName]: {
+			...old,
+			lastAttemptAt: Date.now(),
+			error: errorMessage(error),
+		},
+	})
+}
+
 export async function refreshCreatorAnalyticsPeriod(periodDays = 30, { force = false } = {}) {
 	const days = normalizePeriod(periodDays)
 	const existingPromise = refreshes.get(days)
 	if (existingPromise) return await existingPromise
 
 	const cached = getCreatorAnalyticsSnapshot(days)
-	if (!force && isPeriodFresh(cached)) return cached
+	if (!force && isPeriodFresh(cached) && await cacheMatchesCurrentModrinthUser(cached)) return cached
 
 	const promise = (async () => {
-		const old = getCreatorAnalyticsSnapshot(days)
-		const [modrinthResult, curseForgeResult] = await Promise.allSettled([
-			fetchModrinthAnalytics(days),
-			enqueueCurseForge(days),
-		])
+		const modrinthTask = fetchModrinthAnalytics(days)
+			.then((modrinth) => {
+				persistPeriod(days, { modrinth })
+				return modrinth
+			})
+			.catch((error) => {
+				persistProviderFailure(days, 'modrinth', error)
+				throw error
+			})
 
-		const modrinth = modrinthResult.status === 'fulfilled'
-			? modrinthResult.value
-			: {
-				...(old.modrinth ?? {}),
-				lastAttemptAt: Date.now(),
-				error: errorMessage(modrinthResult.reason),
-			}
-		const curseforge = curseForgeResult.status === 'fulfilled'
-			? curseForgeResult.value
-			: {
-				...(old.curseforge ?? {}),
-				lastAttemptAt: Date.now(),
-				error: errorMessage(curseForgeResult.reason),
-			}
+		const curseForgeTask = enqueueCurseForge(days)
+			.then((curseforge) => {
+				persistPeriod(days, { curseforge })
+				return curseforge
+			})
+			.catch((error) => {
+				persistProviderFailure(days, 'curseforge', error)
+				throw error
+			})
 
-		persistPeriod(days, { modrinth, curseforge })
+		await Promise.allSettled([modrinthTask, curseForgeTask])
 		return getCreatorAnalyticsSnapshot(days)
 	})()
 
@@ -326,7 +350,7 @@ async function warmPeriod(periodDays, options = {}) {
 	if (!(await lowLoadEnough(options))) return false
 	try {
 		await refreshCreatorAnalyticsPeriod(periodDays, { force: false })
-		return true
+		return isPeriodFresh(getCreatorAnalyticsSnapshot(periodDays))
 	} catch (error) {
 		if (import.meta.env.DEV) console.debug(`[Fodrinth] Background analytics ${periodDays}d refresh failed`, error)
 		return false
@@ -337,7 +361,7 @@ function scheduleWarmPeriod(periodDays, delay, options = {}) {
 	setTimeout(() => {
 		runWhenBrowserIdle(async () => {
 			const warmed = await warmPeriod(periodDays, options)
-			if (!warmed) scheduleWarmPeriod(periodDays, Math.max(15_000, delay), options)
+			if (!warmed) scheduleWarmPeriod(periodDays, Math.max(RETRY_DELAY_MS, delay), options)
 		}, 6000)
 	}, delay)
 }
@@ -348,7 +372,7 @@ async function refreshOneStalePeriod() {
 		.map((periodDays) => ({ periodDays, snapshot: getCreatorAnalyticsSnapshot(periodDays) }))
 		.map((item) => ({
 			...item,
-			age: Math.min(providerAge(item.snapshot.modrinth), providerAge(item.snapshot.curseforge)),
+			age: Math.max(providerAge(item.snapshot.modrinth), providerAge(item.snapshot.curseforge)),
 		}))
 		.filter((item) => !isPeriodFresh(item.snapshot))
 		.sort((a, b) => b.age - a.age)
