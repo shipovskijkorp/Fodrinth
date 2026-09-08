@@ -1,5 +1,8 @@
 .fodrinth-projects-page {
 	--fodrinth-project-accent: var(--color-brand);
+	--fodrinth-panel-bg: var(--surface-3, var(--color-surface-3));
+	--fodrinth-panel-bg-hover: var(--surface-4, var(--color-surface-4));
+	--fodrinth-panel-border: var(--surface-5, var(--color-surface-5));
 }
 
 .fodrinth-projects-page .filter-button {
@@ -10,36 +13,36 @@
 }
 
 .fodrinth-projects-page .filter-button:hover {
-	background: var(--color-surface-4) !important;
+	background: var(--surface-4, var(--color-surface-4)) !important;
 	color: var(--color-primary) !important;
 }
 
 .fodrinth-projects-page .filter-button.active {
-	border-color: color-mix(in srgb, var(--color-brand) 42%, var(--color-surface-5)) !important;
+	border-color: color-mix(in srgb, var(--color-brand) 42%, var(--fodrinth-panel-border)) !important;
 	background: var(--color-brand-highlight) !important;
 	color: var(--color-contrast) !important;
 }
 
 .fodrinth-projects-page .filter-count {
 	min-width: 1.35rem;
-	background: var(--color-surface-4) !important;
+	background: var(--surface-4, var(--color-surface-4)) !important;
 	color: var(--color-secondary);
 	text-align: center;
 }
 
 .fodrinth-projects-page .filter-button.active .filter-count {
-	background: color-mix(in srgb, var(--color-brand) 22%, var(--color-surface-3)) !important;
+	background: color-mix(in srgb, var(--color-brand) 22%, var(--fodrinth-panel-bg)) !important;
 	color: var(--color-contrast);
 }
 
 .fodrinth-projects-page .project-input {
-	border-color: var(--color-surface-5) !important;
+	border-color: var(--fodrinth-panel-border) !important;
 	border-radius: 0.65rem !important;
-	background: var(--color-surface-2) !important;
+	background: var(--surface-2, var(--color-surface-2)) !important;
 }
 
 .fodrinth-projects-page .project-input:focus {
-	border-color: color-mix(in srgb, var(--color-brand) 65%, var(--color-surface-5)) !important;
+	border-color: color-mix(in srgb, var(--color-brand) 65%, var(--fodrinth-panel-border)) !important;
 	box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-brand) 14%, transparent);
 }
 
@@ -53,9 +56,9 @@
 	align-items: center;
 	gap: 0.2rem;
 	align-self: stretch;
-	border: 1px solid var(--color-surface-5);
+	border: 1px solid var(--fodrinth-panel-border);
 	border-radius: 0.65rem;
-	background: var(--color-surface-2);
+	background: var(--surface-2, var(--color-surface-2));
 	padding: 0.22rem;
 }
 
@@ -76,12 +79,12 @@
 }
 
 .fodrinth-project-layout-button:hover {
-	background: var(--color-surface-4);
+	background: var(--surface-4, var(--color-surface-4));
 	color: var(--color-primary);
 }
 
 .fodrinth-project-layout-button.is-active {
-	border-color: color-mix(in srgb, var(--color-brand) 40%, var(--color-surface-5));
+	border-color: color-mix(in srgb, var(--color-brand) 40%, var(--fodrinth-panel-border));
 	background: var(--color-brand-highlight);
 	color: var(--color-contrast);
 }
@@ -111,12 +114,10 @@
 	--fodrinth-card-accent: var(--color-brand);
 	position: relative;
 	overflow: hidden;
-	border: 1px solid color-mix(in srgb, var(--fodrinth-card-accent) 42%, var(--color-surface-5)) !important;
+	border: 1px solid var(--fodrinth-panel-border) !important;
 	border-radius: 0.9rem !important;
-	background: var(--color-surface-3) !important;
-	box-shadow:
-		inset 0 3px 0 color-mix(in srgb, var(--fodrinth-card-accent) 88%, transparent),
-		0 1px 0 rgb(255 255 255 / 2%);
+	background: var(--fodrinth-panel-bg) !important;
+	box-shadow: none !important;
 	transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease, transform 120ms ease !important;
 }
 
@@ -133,18 +134,16 @@
 }
 
 .fodrinth-projects-page .project-card:hover {
-	border-color: color-mix(in srgb, var(--fodrinth-card-accent) 72%, var(--color-surface-5)) !important;
-	background: color-mix(in srgb, var(--color-surface-3) 96%, var(--fodrinth-card-accent)) !important;
-	box-shadow:
-		inset 0 3px 0 var(--fodrinth-card-accent),
-		0 8px 24px rgb(0 0 0 / 10%);
+	border-color: var(--fodrinth-panel-border) !important;
+	background: var(--fodrinth-panel-bg-hover) !important;
+	box-shadow: 0 8px 24px rgb(0 0 0 / 10%) !important;
 	transform: translateY(-1px) !important;
 }
 
 .fodrinth-projects-page .project-image {
-	border: 1px solid color-mix(in srgb, var(--fodrinth-card-accent) 28%, var(--color-surface-5));
+	border: 1px solid var(--fodrinth-panel-border);
 	border-radius: 0.75rem !important;
-	background: var(--color-surface-2) !important;
+	background: var(--surface-2, var(--color-surface-2)) !important;
 }
 
 .fodrinth-projects-page .provider-corner {
@@ -161,17 +160,17 @@
 }
 
 .fodrinth-projects-page .provider-modrinth {
-	background: color-mix(in srgb, #1bd96a 11%, var(--color-surface-2)) !important;
+	background: color-mix(in srgb, #1bd96a 11%, var(--surface-2, var(--color-surface-2))) !important;
 	color: #1bd96a !important;
 }
 
 .fodrinth-projects-page .provider-curseforge {
-	background: color-mix(in srgb, #f16436 11%, var(--color-surface-2)) !important;
+	background: color-mix(in srgb, #f16436 11%, var(--surface-2, var(--color-surface-2))) !important;
 	color: #f16436 !important;
 }
 
 .fodrinth-projects-page .synced-chip {
-	border-color: color-mix(in srgb, var(--color-brand) 48%, var(--color-surface-5)) !important;
+	border-color: color-mix(in srgb, var(--color-brand) 48%, var(--fodrinth-panel-border)) !important;
 	background: var(--color-brand-highlight) !important;
 	color: var(--color-contrast) !important;
 	text-transform: none !important;
@@ -179,12 +178,12 @@
 }
 
 .fodrinth-projects-page .provider-lines {
-	border-top-color: color-mix(in srgb, var(--fodrinth-card-accent) 20%, var(--color-surface-4)) !important;
+	border-top-color: var(--fodrinth-panel-border) !important;
 }
 
 .fodrinth-projects-page .provider-line code {
 	border-radius: 0.38rem;
-	background: var(--color-surface-2);
+	background: var(--surface-2, var(--color-surface-2));
 	padding: 0.12rem 0.38rem;
 	color: var(--color-secondary);
 }
@@ -194,21 +193,21 @@
 }
 
 .fodrinth-projects-page .project-card .project-button.primary {
-	border-color: color-mix(in srgb, var(--fodrinth-card-accent) 65%, var(--color-surface-5)) !important;
-	background: color-mix(in srgb, var(--fodrinth-card-accent) 78%, var(--color-surface-2)) !important;
+	border-color: color-mix(in srgb, var(--fodrinth-card-accent) 65%, var(--fodrinth-panel-border)) !important;
+	background: color-mix(in srgb, var(--fodrinth-card-accent) 78%, var(--surface-2, var(--color-surface-2))) !important;
 	color: white !important;
 }
 
 .fodrinth-projects-page .project-card .project-button.secondary {
-	border-color: var(--color-surface-5) !important;
-	background: var(--color-surface-2) !important;
+	border-color: var(--fodrinth-panel-border) !important;
+	background: var(--surface-2, var(--color-surface-2)) !important;
 	color: var(--color-primary) !important;
 }
 
 .fodrinth-projects-page .project-card .project-button.secondary:hover,
 .fodrinth-projects-page .project-card .project-button.subtle:hover {
-	border-color: color-mix(in srgb, var(--fodrinth-card-accent) 44%, var(--color-surface-5)) !important;
-	background: color-mix(in srgb, var(--fodrinth-card-accent) 8%, var(--color-surface-2)) !important;
+	border-color: color-mix(in srgb, var(--fodrinth-card-accent) 30%, var(--fodrinth-panel-border)) !important;
+	background: color-mix(in srgb, var(--fodrinth-card-accent) 7%, var(--surface-2, var(--color-surface-2))) !important;
 }
 
 .fodrinth-projects-page .project-grid.fodrinth-layout-1 .project-card {
