@@ -9,6 +9,7 @@ const CAPTURE_SCRIPT: &str = include_str!("curseforge_capture.js");
 const DOWNLOAD_SCRAPER: &str = include_str!("curseforge_downloads.js");
 const READY_PARAM: &str = "__fodrinth_cf_ready";
 const RESULT_PARAM: &str = "__fodrinth_cf_download_result";
+const STAGE_PARAM: &str = "__fodrinth_cf_download_stage";
 
 fn query_param<R: Runtime>(window: &WebviewWindow<R>, key: &str) -> Result<Option<String>, String> {
     let url = window
@@ -41,9 +42,6 @@ async fn wait_for_document<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), 
     let started = std::time::Instant::now();
 
     while started.elapsed() < Duration::from_secs(25) {
-        // eval_with_callback is unreliable on the current CurseForge Authors dashboard on
-        // Windows/WebView2. Use plain eval to publish readiness into the URL, which Rust can
-        // read through WebviewWindow::url() without IPC from the remote page.
         let _ = window.eval(format!(
             r#"(() => {{
                 try {{
@@ -85,25 +83,24 @@ async fn ensure_window<R: Runtime>(app: &AppHandle<R>) -> Result<WebviewWindow<R
 
 async fn poll_result<R: Runtime>(window: &WebviewWindow<R>) -> Result<Value, String> {
     let _ = clear_query_param(window, RESULT_PARAM);
+    let _ = clear_query_param(window, STAGE_PARAM);
     let result_key = serde_json::to_string(RESULT_PARAM).map_err(|error| error.to_string())?;
+    let stage_key = serde_json::to_string(STAGE_PARAM).map_err(|error| error.to_string())?;
 
-    // The scraper stores its result in a page global. Mirror that global into the current
-    // URL with history.replaceState. This avoids Tauri's callback-based JS evaluation path,
-    // which CurseForge's current dashboard intermittently never answers on Windows.
     window
         .eval(format!(
             r#"(() => {{
-                const key = {result_key};
+                const resultKey = {result_key};
+                const stageKey = {stage_key};
                 const publish = () => {{
                     try {{
-                        const value = window.__FODRINTH_CF_DOWNLOAD_V3_RESULT__;
-                        if (value == null) {{
-                            setTimeout(publish, 200);
-                            return;
-                        }}
                         const url = new URL(location.href);
-                        url.searchParams.set(key, JSON.stringify(value));
+                        const stage = window.__FODRINTH_CF_DOWNLOAD_STAGE__;
+                        if (stage) url.searchParams.set(stageKey, String(stage));
+                        const value = window.__FODRINTH_CF_DOWNLOAD_V3_RESULT__;
+                        if (value != null) url.searchParams.set(resultKey, JSON.stringify(value));
                         history.replaceState(history.state, '', url.href);
+                        if (value == null) setTimeout(publish, 200);
                     }} catch (_) {{
                         setTimeout(publish, 300);
                     }}
@@ -117,13 +114,18 @@ async fn poll_result<R: Runtime>(window: &WebviewWindow<R>) -> Result<Value, Str
     while started.elapsed() < Duration::from_secs(90) {
         if let Some(raw) = query_param(window, RESULT_PARAM)? {
             let _ = clear_query_param(window, RESULT_PARAM);
+            let _ = clear_query_param(window, STAGE_PARAM);
             return serde_json::from_str::<Value>(&raw)
                 .map_err(|error| format!("Could not decode CurseForge download analytics: {error}"));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
-    Err("Timed out waiting for CurseForge download analytics".to_string())
+    let stage = query_param(window, STAGE_PARAM)?
+        .unwrap_or_else(|| "unknown".to_string());
+    Err(format!(
+        "Timed out waiting for CurseForge download analytics (stage: {stage})"
+    ))
 }
 
 #[tauri::command]
@@ -140,23 +142,49 @@ pub async fn curseforge_get_author_downloads<R: Runtime>(
         .map_err(|error| format!("Could not navigate CurseForge Authors downloads page: {error}"))?;
     wait_for_document(&window).await?;
 
-    // Install the capture hook explicitly after each navigation because this dedicated
-    // hidden window can be reused across multiple background refreshes.
     window
         .eval(CAPTURE_SCRIPT)
         .map_err(|error| format!("Could not install CurseForge analytics capture: {error}"))?;
 
     let _ = clear_query_param(&window, RESULT_PARAM);
+    let _ = clear_query_param(&window, STAGE_PARAM);
 
-    // Traversing React fiber internals on the Authors dashboard can visit an enormous graph
-    // and block WebView2's JS thread long enough for an otherwise valid analytics read to time
-    // out. The network-capture parser plus the rendered SVG fallback are both sufficient for
-    // the downloads chart, so disable the React-internals pass in the injected scraper.
+    // The React fiber tree on the Authors dashboard is enormous. Walking it can block the
+    // WebView2 JS thread for longer than the entire analytics timeout. Network captures and
+    // the rendered chart are enough, so keep the scraper bounded and observable.
     let script = DOWNLOAD_SCRAPER
         .replace("__PERIOD_DAYS__", &period_days.to_string())
         .replace(
+            "const run = async () => {",
+            "const run = async () => { window.__FODRINTH_CF_DOWNLOAD_STAGE__ = 'boot';",
+        )
+        .replace(
+            "await openDownloads();",
+            "window.__FODRINTH_CF_DOWNLOAD_STAGE__ = 'open-downloads'; await openDownloads();",
+        )
+        .replace(
+            "await selectPeriod();",
+            "window.__FODRINTH_CF_DOWNLOAD_STAGE__ = 'select-period'; await selectPeriod();",
+        )
+        .replace(
+            "await selectTotal();",
+            "window.__FODRINTH_CF_DOWNLOAD_STAGE__ = 'select-total'; await selectTotal();",
+        )
+        .replace(
+            "const captured = captures();",
+            "window.__FODRINTH_CF_DOWNLOAD_STAGE__ = 'parse-captures'; const allCaptured = captures(); const relevantCaptured = allCaptured.filter((capture) => /download|stat|analytic|metric|chart/i.test(capture.url)); const captured = (relevantCaptured.length ? relevantCaptured : allCaptured).slice(-80);",
+        )
+        .replace(
             "const reactPropsInspected = inspectReactChartProps();",
             "const reactPropsInspected = 0;",
+        )
+        .replace(
+            "const currentSeriesPoints = series.filter((row) => {",
+            "window.__FODRINTH_CF_DOWNLOAD_STAGE__ = 'render-fallback'; const currentSeriesPoints = series.filter((row) => {",
+        )
+        .replace(
+            "window.__FODRINTH_CF_DOWNLOAD_V3_RESULT__ = {\n      needsLogin: false,",
+            "window.__FODRINTH_CF_DOWNLOAD_STAGE__ = 'done'; window.__FODRINTH_CF_DOWNLOAD_V3_RESULT__ = {\n      needsLogin: false,",
         );
     window
         .eval(script)
