@@ -45,7 +45,7 @@ pub type Result<T> = std::result::Result<T, TheseusSerializableError>;
 //     Serializable(),
 // }
 
-// Serializable error intermediary, so TheseusGuiError can be Serializable (eg: so that TheseusGuiError can be Serializable (eg: so that errors can be returned to the JavaScript side)
+// Serializable error intermediary, so TheseusGuiError can be Serializable (eg: so that we can return theseus::Errors in Tauri directly)
 #[derive(Error, Debug)]
 pub enum TheseusSerializableError {
     #[error("{0}")]
@@ -109,8 +109,8 @@ macro_rules! impl_serialize {
                         if let Some(code) = code {
                             state.serialize_field("code", code)?;
                         }
-                        if let Some(unavailable_reason) = unavailable_reason {
-                            state.serialize_field("reason", unavailable_reason)?;
+                        if let Some(reason) = unavailable_reason {
+                            state.serialize_field("reason", reason)?;
                         }
                         state.end()
                     }
@@ -128,7 +128,7 @@ macro_rules! impl_serialize {
     };
 }
 
-// Use the macro to implement Serialize for each variant of TheseusSerializableError
+// Use the macro to implement Serialize for TheseusSerializableError
 #[cfg(not(feature = "updater"))]
 impl_serialize! {
     IO,
