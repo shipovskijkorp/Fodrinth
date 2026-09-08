@@ -161,7 +161,7 @@ export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
 	const projectsResult = await settle(getCurseForgeAuthorProjects())
 	const projectResponse = projectsResult.value
 	const authorProjects = Array.isArray(projectResponse?.projects) ? projectResponse.projects : []
-	const freshResult = await settle(invoke('plugin:utils|curseforge_get_author_downloads', {
+	const freshResult = await settle(invoke('plugin:utils|curseforge_get_author_downloads_v6', {
 		periodDays,
 		knownProjects: compactKnownProjects(authorProjects),
 	}))
