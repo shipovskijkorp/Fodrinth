@@ -8,7 +8,6 @@ import {
 	TrendingDownIcon,
 	TrendingUpIcon,
 } from '@modrinth/assets'
-import { injectModrinthClient } from '@modrinth/ui'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import {
@@ -18,17 +17,18 @@ import {
 } from '@/helpers/curseforge-auth.js'
 import {
 	CURSEFORGE_USD_PER_POINT,
-	getCurseForgeAuthorAnalytics,
 	openCurseForgeAuthorPortal,
 } from '@/helpers/curseforge-analytics.js'
+import {
+	CREATOR_ANALYTICS_CACHE_UPDATED_EVENT,
+	getCreatorAnalyticsSnapshot,
+	refreshCreatorAnalyticsPeriod,
+} from '@/helpers/creator-analytics-cache.js'
 import {
 	CREATOR_PROJECT_LINKS_CHANGED_EVENT,
 	getCreatorProjectLinks,
 } from '@/helpers/creator-projects.js'
-import { get as getModrinthCredentials } from '@/helpers/mr_auth.ts'
-import { get_user_projects } from '@/helpers/users'
 
-const client = injectModrinthClient()
 const DAY_MS = 24 * 60 * 60 * 1000
 
 const sourceMode = ref('combined')
@@ -50,6 +50,8 @@ const payoutHistory = ref([])
 const curseForgeConnected = ref(isCurseForgeAuthenticated())
 const curseForgeProfile = ref(getCurseForgeProfile())
 const curseForgeAnalytics = ref(null)
+const modrinthCacheKnown = ref(false)
+const curseForgeCacheKnown = ref(false)
 
 const sourceTabs = [
 	{ id: 'combined', label: 'Combined' },
@@ -612,7 +614,7 @@ const hasVisibleData = computed(() => {
 	return modrinthIncluded.value || curseForgeMoneyIncluded.value
 })
 const needsCurseForgePortalLogin = computed(() =>
-	curseForgeSelectable.value && (!curseForgeAnalytics.value?.connected || curseForgeAnalytics.value?.needsLogin),
+	curseForgeSelectable.value && curseForgeCacheKnown.value && (!curseForgeAnalytics.value?.connected || curseForgeAnalytics.value?.needsLogin),
 )
 const pageNotice = computed(() => {
 	if (errorMessage.value && sourceMode.value !== 'curseforge') return errorMessage.value
@@ -622,8 +624,8 @@ const pageNotice = computed(() => {
 			? 'CurseForge publishing is connected, but private creator analytics uses your CurseForge Authors browser session. Open the Author Dashboard, sign in there once, then refresh analytics.'
 			: 'CurseForge creator analytics uses a CurseForge Authors browser session. Open the Author Dashboard and sign in; the publishing API token is a separate credential.'
 	}
-	if (!modrinthCredentials.value && sourceMode.value === 'modrinth') return 'Sign into Modrinth to load creator analytics for your projects.'
-	if (sourceMode.value === 'combined' && includedProviderCount.value < 2) {
+	if (modrinthCacheKnown.value && !modrinthCredentials.value && sourceMode.value === 'modrinth') return 'Sign into Modrinth to load creator analytics for your projects.'
+	if (sourceMode.value === 'combined' && includedProviderCount.value < 2 && (modrinthCacheKnown.value || curseForgeCacheKnown.value)) {
 		return 'Combined is showing every provider with compatible data currently available. Missing provider values stay excluded instead of being estimated.'
 	}
 	if (curseForgeAnalytics.value?.downloadsError && metricMode.value === 'downloads' && sourceMode.value !== 'modrinth') {
@@ -672,82 +674,73 @@ function trendLabel(change) {
 	return `${change > 0 ? '+' : ''}${change.toFixed(1)}%`
 }
 
-async function refreshModrinthAnalytics() {
-	modrinthCredentials.value = await getModrinthCredentials()
-	if (!modrinthCredentials.value?.user_id) {
+function hydrateCreatorAnalytics(snapshot = getCreatorAnalyticsSnapshot(periodDays.value)) {
+	if (Number(snapshot?.periodDays) !== Number(periodDays.value)) return
+
+	const modrinth = snapshot?.modrinth ?? null
+	modrinthCacheKnown.value = !!modrinth
+	if (modrinth) {
+		modrinthCredentials.value = modrinth.authenticated
+			? { user_id: modrinth.userId, cached: true }
+			: null
+		modrinthProjects.value = Array.isArray(modrinth.projects) ? modrinth.projects : []
+		analyticsResponse.value = modrinth.analyticsResponse ?? null
+		payoutBalance.value = modrinth.payoutBalance ?? null
+		payoutHistory.value = Array.isArray(modrinth.payoutHistory) ? modrinth.payoutHistory : []
+		errorMessage.value = modrinth.error ? `Could not refresh Modrinth analytics: ${modrinth.error}` : ''
+	} else {
+		modrinthCredentials.value = null
 		modrinthProjects.value = []
 		analyticsResponse.value = null
 		payoutBalance.value = null
 		payoutHistory.value = []
-		return
+		errorMessage.value = ''
 	}
-	modrinthProjects.value = await get_user_projects(modrinthCredentials.value.user_id)
-	const projectIds = modrinthProjects.value.map((project) => project.id).filter(Boolean)
-	if (projectIds.length === 0) {
-		analyticsResponse.value = null
-		payoutBalance.value = null
-		payoutHistory.value = []
-		return
-	}
-	const end = new Date()
-	const start = new Date(end.getTime() - periodDays.value * 2 * DAY_MS)
-	const request = {
-		time_range: {
-			start: start.toISOString(),
-			end: end.toISOString(),
-			resolution: { slices: periodDays.value * 2 },
-		},
-		project_ids: projectIds,
-		return_metrics: {
-			project_downloads: { bucket_by: ['project_id'] },
-			project_revenue: { bucket_by: ['project_id'] },
-		},
-	}
-	const [analyticsResult, payoutResult, historyResult] = await Promise.allSettled([
-		client.labrinth.analytics_v3.fetch(request),
-		client.labrinth.payout_v3.getBalance(),
-		client.labrinth.payout_v3.getHistory(),
-	])
-	if (analyticsResult.status === 'fulfilled') analyticsResponse.value = analyticsResult.value
-	else {
-		analyticsResponse.value = null
-		throw analyticsResult.reason
-	}
-	payoutBalance.value = payoutResult.status === 'fulfilled' ? payoutResult.value : null
-	payoutHistory.value = historyResult.status === 'fulfilled' ? historyResult.value : []
-}
 
-async function refreshCurseForgeAnalytics() {
-	curseForgeErrorMessage.value = ''
-	try {
-		curseForgeAnalytics.value = await getCurseForgeAuthorAnalytics(periodDays.value)
-	} catch (error) {
-		console.error('Failed to load CurseForge creator analytics', error)
+	const curseforge = snapshot?.curseforge ?? null
+	curseForgeCacheKnown.value = !!curseforge
+	if (curseforge) {
+		curseForgeAnalytics.value = curseforge.analytics ?? null
+		curseForgeErrorMessage.value = curseforge.error
+			? `Could not refresh CurseForge analytics: ${curseforge.error}`
+			: ''
+	} else {
 		curseForgeAnalytics.value = null
-		curseForgeErrorMessage.value = error instanceof Error
-			? `Could not load CurseForge analytics: ${error.message}`
-			: `Could not load CurseForge analytics: ${String(error)}`
+		curseForgeErrorMessage.value = ''
 	}
 }
 
 async function refreshAnalytics() {
 	loading.value = true
 	errorMessage.value = ''
+	curseForgeErrorMessage.value = ''
 	try {
-		const jobs = []
-		if (sourceMode.value !== 'curseforge') {
-			jobs.push(refreshModrinthAnalytics().catch((error) => {
-				console.error('Failed to load Modrinth analytics', error)
-				errorMessage.value = error instanceof Error
-					? `Could not load Modrinth analytics: ${error.message}`
-					: 'Could not load Modrinth analytics.'
-			}))
-		}
-		if (sourceMode.value !== 'modrinth') jobs.push(refreshCurseForgeAnalytics())
-		await Promise.all(jobs)
+		const snapshot = await refreshCreatorAnalyticsPeriod(periodDays.value, { force: true })
+		hydrateCreatorAnalytics(snapshot)
+	} catch (error) {
+		console.error('Failed to refresh creator analytics', error)
+		errorMessage.value = error instanceof Error
+			? `Could not refresh creator analytics: ${error.message}`
+			: `Could not refresh creator analytics: ${String(error)}`
 	} finally {
 		loading.value = false
 	}
+}
+
+function refreshPeriodInBackground() {
+	const requestedPeriod = Number(periodDays.value)
+	void refreshCreatorAnalyticsPeriod(requestedPeriod, { force: false })
+		.then((snapshot) => {
+			if (Number(periodDays.value) === requestedPeriod) hydrateCreatorAnalytics(snapshot)
+		})
+		.catch((error) => {
+			if (import.meta.env.DEV) console.debug('[Fodrinth] Cached analytics refresh failed', error)
+		})
+}
+
+function handleCreatorAnalyticsCacheUpdated(event) {
+	if (Number(event?.detail?.periodDays) !== Number(periodDays.value)) return
+	hydrateCreatorAnalytics()
 }
 
 async function connectCurseForgeAnalytics() {
@@ -770,8 +763,10 @@ function updateCreatorProjectLinks() {
 	creatorProjectLinks.value = getCreatorProjectLinks()
 }
 
-watch(periodDays, () => void refreshAnalytics())
-watch(sourceMode, () => void refreshAnalytics())
+watch(periodDays, () => {
+	hydrateCreatorAnalytics()
+	refreshPeriodInBackground()
+})
 watch(metricMode, () => {
 	if (metricMode.value !== 'downloads' && projectSort.value === 'alltime') projectSort.value = 'period'
 })
@@ -779,12 +774,14 @@ watch(metricMode, () => {
 onMounted(() => {
 	window.addEventListener(CURSEFORGE_AUTH_CHANGED_EVENT, updateCurseForgeState)
 	window.addEventListener(CREATOR_PROJECT_LINKS_CHANGED_EVENT, updateCreatorProjectLinks)
-	void refreshAnalytics()
+	window.addEventListener(CREATOR_ANALYTICS_CACHE_UPDATED_EVENT, handleCreatorAnalyticsCacheUpdated)
+	hydrateCreatorAnalytics()
 })
 
 onBeforeUnmount(() => {
 	window.removeEventListener(CURSEFORGE_AUTH_CHANGED_EVENT, updateCurseForgeState)
 	window.removeEventListener(CREATOR_PROJECT_LINKS_CHANGED_EVENT, updateCreatorProjectLinks)
+	window.removeEventListener(CREATOR_ANALYTICS_CACHE_UPDATED_EVENT, handleCreatorAnalyticsCacheUpdated)
 })
 </script>
 
