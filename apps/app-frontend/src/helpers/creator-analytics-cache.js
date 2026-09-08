@@ -10,7 +10,7 @@ export const CREATOR_ANALYTICS_CACHE_UPDATED_EVENT = 'fodrinth:creator-analytics
 
 const STORAGE_KEY = 'fodrinth.creator.analytics-cache.v1'
 const CACHE_VERSION = 1
-const DEFAULT_PERIODS = [30, 7, 90]
+const DEFAULT_PERIODS = [30, 90, 7]
 const FRESH_FOR_MS = 15 * 60 * 1000
 const PERIODIC_CHECK_MS = 5 * 60 * 1000
 const LOW_LOAD_INTERACTION_MS = 12 * 1000
@@ -357,11 +357,20 @@ async function warmPeriod(periodDays, options = {}) {
 	}
 }
 
-function scheduleWarmPeriod(periodDays, delay, options = {}) {
+function scheduleStartupWarmup(delay = STARTUP_DELAY_MS) {
 	setTimeout(() => {
 		runWhenBrowserIdle(async () => {
-			const warmed = await warmPeriod(periodDays, options)
-			if (!warmed) scheduleWarmPeriod(periodDays, Math.max(RETRY_DELAY_MS, delay), options)
+			for (const periodDays of DEFAULT_PERIODS) {
+				if (!(await lowLoadEnough({ ignoreInteraction: true }))) {
+					scheduleStartupWarmup(RETRY_DELAY_MS)
+					return
+				}
+				try {
+					await refreshCreatorAnalyticsPeriod(periodDays, { force: false })
+				} catch (error) {
+					if (import.meta.env.DEV) console.debug(`[Fodrinth] Startup analytics ${periodDays}d refresh failed`, error)
+				}
+			}
 		}, 6000)
 	}, delay)
 }
@@ -392,11 +401,9 @@ export function startCreatorAnalyticsBackground() {
 		window.addEventListener(event, noteInteraction, { passive: true })
 	}
 
-	// Warm the default 30-day view shortly after the UI mounts. The promise is deliberately
-	// detached from application startup, and install jobs are checked before any network work.
-	scheduleWarmPeriod(30, STARTUP_DELAY_MS, { ignoreInteraction: true })
-	scheduleWarmPeriod(7, 18_000)
-	scheduleWarmPeriod(90, 36_000)
+	// Warm startup analytics sequentially in the priority order 30d -> 90d -> 7d.
+	// 90d begins immediately after the 30d refresh finishes, without an artificial delay.
+	scheduleStartupWarmup()
 
 	periodicTimer = window.setInterval(() => {
 		runWhenBrowserIdle(refreshOneStalePeriod, 8000)
