@@ -16,23 +16,33 @@ import {
 	getCurseForgeProfile,
 	isCurseForgeAuthenticated,
 } from '@/helpers/curseforge-auth.js'
+import {
+	CURSEFORGE_USD_PER_POINT,
+	getCurseForgeAuthorAnalytics,
+	openCurseForgeAuthorPortal,
+} from '@/helpers/curseforge-analytics.js'
 import { get as getModrinthCredentials } from '@/helpers/mr_auth.ts'
 import { get_user_projects } from '@/helpers/users'
 
 const client = injectModrinthClient()
+const DAY_MS = 24 * 60 * 60 * 1000
 
 const sourceMode = ref('combined')
 const metricMode = ref('downloads')
 const viewMode = ref('total')
 const periodDays = ref(30)
 const loading = ref(false)
+const openingCurseForgePortal = ref(false)
 const errorMessage = ref('')
+const curseForgeErrorMessage = ref('')
 const modrinthCredentials = ref(null)
 const modrinthProjects = ref([])
 const analyticsResponse = ref(null)
 const payoutBalance = ref(null)
+const payoutHistory = ref([])
 const curseForgeConnected = ref(isCurseForgeAuthenticated())
 const curseForgeProfile = ref(getCurseForgeProfile())
+const curseForgeAnalytics = ref(null)
 
 const sourceTabs = [
 	{ id: 'combined', label: 'Combined' },
@@ -58,6 +68,9 @@ const compactNumberFormatter = new Intl.NumberFormat(undefined, {
 	notation: 'compact',
 	maximumFractionDigits: 1,
 })
+const pointsFormatter = new Intl.NumberFormat(undefined, {
+	maximumFractionDigits: 2,
+})
 const moneyFormatter = new Intl.NumberFormat(undefined, {
 	style: 'currency',
 	currency: 'USD',
@@ -76,6 +89,15 @@ function formatCompact(value) {
 
 function formatMoney(value) {
 	return moneyFormatter.format(Number.isFinite(value) ? value : 0)
+}
+
+function formatPoints(value) {
+	return pointsFormatter.format(Number.isFinite(value) ? value : 0)
+}
+
+function finiteOrNull(value) {
+	const number = Number(value)
+	return Number.isFinite(number) ? number : null
 }
 
 function getMetricValue(point, kind) {
@@ -126,29 +148,160 @@ function buildProjectTotals(slices, kind) {
 	return totals
 }
 
-const modrinthIncluded = computed(() => sourceMode.value !== 'curseforge' && !!modrinthCredentials.value)
-const curseForgeIncluded = computed(() => false)
+const rangeDates = computed(() => {
+	const end = new Date()
+	const start = new Date(end.getTime() - periodDays.value * DAY_MS)
+	const previousStart = new Date(start.getTime() - periodDays.value * DAY_MS)
+	return { start, end, previousStart }
+})
+
+function inRange(timestamp, start, end) {
+	const time = new Date(timestamp).getTime()
+	return Number.isFinite(time) && time >= start.getTime() && time < end.getTime()
+}
+
+function sumTransactions(items, start, end, field = 'usd') {
+	return (items ?? []).reduce((total, item) => {
+		if (!inRange(item?.timestamp, start, end)) return total
+		return total + (finiteOrNull(item?.[field]) ?? 0)
+	}, 0)
+}
+
+function sumTransactionPoints(items, start, end) {
+	return sumTransactions(items, start, end, 'points')
+}
+
+const modrinthSelectable = computed(() => sourceMode.value !== 'curseforge')
+const curseForgeSelectable = computed(() => sourceMode.value !== 'modrinth')
+const modrinthIncluded = computed(() => modrinthSelectable.value && !!modrinthCredentials.value)
+
+const curseForgeDownloads = computed(() => curseForgeAnalytics.value?.downloads ?? null)
+const curseForgeDownloadsIncluded = computed(() => {
+	if (!curseForgeSelectable.value || !curseForgeAnalytics.value?.connected) return false
+	const data = curseForgeDownloads.value
+	return !!data && (
+		finiteOrNull(data.current) != null ||
+		finiteOrNull(data.allTime) != null ||
+		(data.series?.length ?? 0) > 0 ||
+		(data.projects?.length ?? 0) > 0
+	)
+})
+const curseForgeMoneyIncluded = computed(() => {
+	if (!curseForgeSelectable.value || !curseForgeAnalytics.value?.connected) return false
+	return (
+		(curseForgeAnalytics.value?.earnings?.length ?? 0) > 0 ||
+		(curseForgeAnalytics.value?.withdrawals?.length ?? 0) > 0 ||
+		finiteOrNull(curseForgeAnalytics.value?.rewardBalanceUsd) != null
+	)
+})
+const curseForgeIncluded = computed(() =>
+	metricMode.value === 'downloads' ? curseForgeDownloadsIncluded.value : curseForgeMoneyIncluded.value,
+)
 const includedProviderCount = computed(
 	() => Number(modrinthIncluded.value) + Number(curseForgeIncluded.value),
 )
 
-const currentDownloads = computed(() =>
+const modrinthCurrentDownloads = computed(() =>
 	modrinthIncluded.value ? sumMetric(splitAnalytics.value.current, 'downloads') : 0,
 )
-const previousDownloads = computed(() =>
+const modrinthPreviousDownloads = computed(() =>
 	modrinthIncluded.value ? sumMetric(splitAnalytics.value.previous, 'downloads') : 0,
 )
-const currentRevenue = computed(() =>
+const modrinthCurrentRevenue = computed(() =>
 	modrinthIncluded.value ? sumMetric(splitAnalytics.value.current, 'revenue') : 0,
 )
-const previousRevenue = computed(() =>
+const modrinthPreviousRevenue = computed(() =>
 	modrinthIncluded.value ? sumMetric(splitAnalytics.value.previous, 'revenue') : 0,
 )
-const allTimeDownloads = computed(() =>
+const modrinthAllTimeDownloads = computed(() =>
 	modrinthIncluded.value
 		? modrinthProjects.value.reduce((total, project) => total + (Number(project.downloads) || 0), 0)
 		: 0,
 )
+
+const curseForgeCurrentDownloads = computed(() =>
+	curseForgeDownloadsIncluded.value ? finiteOrNull(curseForgeDownloads.value?.current) ?? 0 : 0,
+)
+const curseForgePreviousDownloads = computed(() =>
+	curseForgeDownloadsIncluded.value ? finiteOrNull(curseForgeDownloads.value?.previous) ?? 0 : 0,
+)
+const curseForgeAllTimeDownloads = computed(() =>
+	curseForgeDownloadsIncluded.value ? finiteOrNull(curseForgeDownloads.value?.allTime) ?? 0 : 0,
+)
+const curseForgeUniqueDownloads = computed(() =>
+	curseForgeDownloadsIncluded.value ? finiteOrNull(curseForgeDownloads.value?.uniqueCurrent) : null,
+)
+const curseForgePreviousUniqueDownloads = computed(() =>
+	curseForgeDownloadsIncluded.value ? finiteOrNull(curseForgeDownloads.value?.uniquePrevious) : null,
+)
+
+const curseForgeCurrentRevenue = computed(() =>
+	curseForgeMoneyIncluded.value
+		? sumTransactions(
+			curseForgeAnalytics.value?.earnings,
+			rangeDates.value.start,
+			rangeDates.value.end,
+		)
+		: 0,
+)
+const curseForgePreviousRevenue = computed(() =>
+	curseForgeMoneyIncluded.value
+		? sumTransactions(
+			curseForgeAnalytics.value?.earnings,
+			rangeDates.value.previousStart,
+			rangeDates.value.start,
+		)
+		: 0,
+)
+const curseForgeCurrentPoints = computed(() =>
+	curseForgeMoneyIncluded.value
+		? sumTransactionPoints(
+			curseForgeAnalytics.value?.earnings,
+			rangeDates.value.start,
+			rangeDates.value.end,
+		)
+		: 0,
+)
+const curseForgeRewardPoints = computed(() => finiteOrNull(curseForgeAnalytics.value?.rewardPoints))
+const curseForgeRewardBalanceUsd = computed(() => finiteOrNull(curseForgeAnalytics.value?.rewardBalanceUsd))
+const curseForgePaidCurrent = computed(() =>
+	curseForgeMoneyIncluded.value
+		? sumTransactions(
+			curseForgeAnalytics.value?.withdrawals,
+			rangeDates.value.start,
+			rangeDates.value.end,
+		)
+		: 0,
+)
+
+const modrinthPaidCurrent = computed(() => {
+	if (!modrinthIncluded.value) return 0
+	return payoutHistory.value.reduce((total, transaction) => {
+		if (transaction?.type !== 'withdrawal') return total
+		if (!inRange(transaction.created, rangeDates.value.start, rangeDates.value.end)) return total
+		return total + Math.abs(Number(transaction.amount) || 0)
+	}, 0)
+})
+
+const currentDownloads = computed(() => modrinthCurrentDownloads.value + curseForgeCurrentDownloads.value)
+const previousDownloads = computed(() => modrinthPreviousDownloads.value + curseForgePreviousDownloads.value)
+const currentRevenue = computed(() => modrinthCurrentRevenue.value + curseForgeCurrentRevenue.value)
+const previousRevenue = computed(() => modrinthPreviousRevenue.value + curseForgePreviousRevenue.value)
+const allTimeDownloads = computed(() => modrinthAllTimeDownloads.value + curseForgeAllTimeDownloads.value)
+const availableBalance = computed(() => {
+	let total = 0
+	let hasValue = false
+	if (modrinthIncluded.value && payoutBalance.value) {
+		total += Number(payoutBalance.value.available) || 0
+		hasValue = true
+	}
+	if (curseForgeMoneyIncluded.value && curseForgeRewardBalanceUsd.value != null) {
+		total += curseForgeRewardBalanceUsd.value
+		hasValue = true
+	}
+	return hasValue ? total : null
+})
+const paidCurrent = computed(() => modrinthPaidCurrent.value + curseForgePaidCurrent.value)
 
 function percentChange(current, previous) {
 	if (!previous) return null
@@ -157,17 +310,64 @@ function percentChange(current, previous) {
 
 const downloadChange = computed(() => percentChange(currentDownloads.value, previousDownloads.value))
 const revenueChange = computed(() => percentChange(currentRevenue.value, previousRevenue.value))
-
-const currentMetricKind = computed(() => (metricMode.value === 'downloads' ? 'downloads' : 'revenue'))
-const currentSeries = computed(() => {
-	if (!modrinthIncluded.value) return []
-	return buildSeries(splitAnalytics.value.current, currentMetricKind.value)
+const uniqueDownloadChange = computed(() => {
+	if (curseForgeUniqueDownloads.value == null || curseForgePreviousUniqueDownloads.value == null) return null
+	return percentChange(curseForgeUniqueDownloads.value, curseForgePreviousUniqueDownloads.value)
 })
 
-const rangeDates = computed(() => {
-	const end = new Date()
-	const start = new Date(end.getTime() - periodDays.value * 24 * 60 * 60 * 1000)
-	return { start, end }
+function makeDailySeriesFromTransactions(items, field = 'usd') {
+	const values = Array(periodDays.value).fill(0)
+	const start = rangeDates.value.start.getTime()
+	for (const item of items ?? []) {
+		const timestamp = new Date(item?.timestamp).getTime()
+		if (!Number.isFinite(timestamp) || timestamp < start || timestamp >= rangeDates.value.end.getTime()) continue
+		const index = Math.min(periodDays.value - 1, Math.max(0, Math.floor((timestamp - start) / DAY_MS)))
+		values[index] += finiteOrNull(item?.[field]) ?? 0
+	}
+	return values
+}
+
+function makeDailySeriesFromDatedRows(rows, field) {
+	const values = Array(periodDays.value).fill(0)
+	const start = rangeDates.value.start.getTime()
+	let found = false
+	for (const row of rows ?? []) {
+		const timestamp = new Date(row?.date).getTime()
+		const value = finiteOrNull(row?.[field])
+		if (!Number.isFinite(timestamp) || value == null || timestamp < start || timestamp >= rangeDates.value.end.getTime()) continue
+		const index = Math.min(periodDays.value - 1, Math.max(0, Math.floor((timestamp - start) / DAY_MS)))
+		values[index] += value
+		found = true
+	}
+	return found ? values : []
+}
+
+function mergeSeries(left, right) {
+	if (left.length === 0) return right
+	if (right.length === 0) return left
+	const size = Math.max(left.length, right.length)
+	return Array.from({ length: size }, (_, index) => (left[index] ?? 0) + (right[index] ?? 0))
+}
+
+const modrinthCurrentSeries = computed(() => {
+	if (!modrinthIncluded.value) return []
+	return buildSeries(
+		splitAnalytics.value.current,
+		metricMode.value === 'downloads' ? 'downloads' : 'revenue',
+	)
+})
+const curseForgeCurrentSeries = computed(() => {
+	if (metricMode.value === 'downloads') {
+		if (!curseForgeDownloadsIncluded.value) return []
+		return makeDailySeriesFromDatedRows(curseForgeDownloads.value?.series, 'total')
+	}
+	if (!curseForgeMoneyIncluded.value) return []
+	return makeDailySeriesFromTransactions(curseForgeAnalytics.value?.earnings, 'usd')
+})
+const currentSeries = computed(() => {
+	if (sourceMode.value === 'modrinth') return modrinthCurrentSeries.value
+	if (sourceMode.value === 'curseforge') return curseForgeCurrentSeries.value
+	return mergeSeries(modrinthCurrentSeries.value, curseForgeCurrentSeries.value)
 })
 
 const chartPoints = computed(() => {
@@ -189,51 +389,109 @@ const chartAreaPoints = computed(() => {
 	if (!chartPoints.value) return ''
 	return `0,220 ${chartPoints.value} 760,220`
 })
-
 const chartMax = computed(() => Math.max(...currentSeries.value, 0))
 const chartTitle = computed(() =>
-	metricMode.value === 'downloads' ? 'Downloads over time' : 'Estimated revenue over time',
+	metricMode.value === 'downloads' ? 'Downloads over time' : 'Creator earnings over time',
 )
 
+function buildCurseForgeEarningsByProject() {
+	const totals = new Map()
+	for (const earning of curseForgeAnalytics.value?.earnings ?? []) {
+		if (!inRange(earning?.timestamp, rangeDates.value.start, rangeDates.value.end)) continue
+		for (const project of earning?.projects ?? []) {
+			if (!project?.name) continue
+			const value = finiteOrNull(project.usd) ?? (finiteOrNull(project.points) ?? 0) * CURSEFORGE_USD_PER_POINT
+			totals.set(project.name, (totals.get(project.name) ?? 0) + value)
+		}
+	}
+	return totals
+}
+
 const projectRows = computed(() => {
-	if (!modrinthIncluded.value) return []
-	const kind = currentMetricKind.value
-	const totals = buildProjectTotals(splitAnalytics.value.current, kind)
-	return modrinthProjects.value
-		.map((project) => ({
-			id: project.id,
-			name: project.title ?? project.name ?? project.slug ?? project.id,
-			icon: project.icon_url ?? null,
-			provider: 'Modrinth',
-			periodValue: totals.get(project.id) ?? 0,
-			allTimeDownloads: Number(project.downloads) || 0,
-		}))
-		.sort((a, b) => b.periodValue - a.periodValue)
+	const rows = []
+	if (modrinthIncluded.value) {
+		const kind = metricMode.value === 'downloads' ? 'downloads' : 'revenue'
+		const totals = buildProjectTotals(splitAnalytics.value.current, kind)
+		for (const project of modrinthProjects.value) {
+			rows.push({
+				id: `modrinth:${project.id}`,
+				name: project.title ?? project.name ?? project.slug ?? project.id,
+				icon: project.icon_url ?? null,
+				provider: 'Modrinth',
+				className: 'modrinth',
+				periodValue: totals.get(project.id) ?? 0,
+				allTimeDownloads: Number(project.downloads) || 0,
+			})
+		}
+	}
+
+	if (curseForgeIncluded.value) {
+		if (metricMode.value === 'downloads') {
+			for (const project of curseForgeDownloads.value?.projects ?? []) {
+				const periodValue = finiteOrNull(project.period) ?? finiteOrNull(project.current) ?? finiteOrNull(project.total) ?? 0
+				rows.push({
+					id: `curseforge:${project.id ?? project.name}`,
+					name: project.name ?? String(project.id ?? 'CurseForge project'),
+					icon: project.icon ?? null,
+					provider: 'CurseForge',
+					className: 'curseforge',
+					periodValue,
+					allTimeDownloads: finiteOrNull(project.allTime) ?? finiteOrNull(project.total) ?? 0,
+					uniqueDownloads: finiteOrNull(project.unique),
+				})
+			}
+		} else {
+			for (const [name, value] of buildCurseForgeEarningsByProject()) {
+				rows.push({
+					id: `curseforge:${name}`,
+					name,
+					icon: null,
+					provider: 'CurseForge',
+					className: 'curseforge',
+					periodValue: value,
+					allTimeDownloads: 0,
+				})
+			}
+		}
+	}
+
+	return rows.sort((a, b) => b.periodValue - a.periodValue)
 })
 
 const maxProjectValue = computed(() => Math.max(...projectRows.value.map((row) => row.periodValue), 1))
 
 const summaryCards = computed(() => {
 	if (metricMode.value === 'downloads') {
-		return [
+		const cards = [
 			{
 				label: `Downloads · ${periodDays.value}d`,
 				value: formatNumber(currentDownloads.value),
 				icon: DownloadIcon,
 				change: downloadChange.value,
-				subtitle: 'vs previous period',
+				subtitle: 'vs previous matching period',
 			},
 			{
 				label: 'All-time downloads',
 				value: formatNumber(allTimeDownloads.value),
 				icon: ChartIcon,
-				subtitle: 'Cumulative provider totals',
+				subtitle: 'Cumulative compatible provider totals',
 			},
+		]
+		if (curseForgeUniqueDownloads.value != null) {
+			cards.push({
+				label: `CurseForge unique · ${periodDays.value}d`,
+				value: formatNumber(curseForgeUniqueDownloads.value),
+				icon: DownloadIcon,
+				change: uniqueDownloadChange.value,
+				subtitle: 'Unique downloads are provider-native and are not mixed with Modrinth',
+			})
+		}
+		cards.push(
 			{
 				label: 'Projects',
 				value: formatNumber(projectRows.value.length),
 				icon: PackageIcon,
-				subtitle: 'Projects included in this view',
+				subtitle: 'Publications included in this view',
 			},
 			{
 				label: 'Sources included',
@@ -241,61 +499,75 @@ const summaryCards = computed(() => {
 				icon: ChartIcon,
 				subtitle: 'Only compatible provider data is summed',
 			},
-		]
+		)
+		return cards
 	}
 
+	const pending = modrinthIncluded.value && payoutBalance.value ? Number(payoutBalance.value.pending) || 0 : null
 	return [
 		{
-			label: `Estimated · ${periodDays.value}d`,
+			label: `Estimated / earned · ${periodDays.value}d`,
 			value: formatMoney(currentRevenue.value),
 			icon: CurrencyIcon,
 			change: revenueChange.value,
-				subtitle: 'Provider-reported analytics',
+			subtitle:
+				curseForgeMoneyIncluded.value
+					? `CurseForge: ${formatPoints(curseForgeCurrentPoints.value)} points × $${CURSEFORGE_USD_PER_POINT.toFixed(2)}`
+					: 'Provider-reported creator earnings',
 		},
 		{
-			label: 'Confirmed',
-			value: modrinthIncluded.value && payoutBalance.value ? formatMoney(payoutBalance.value.available) : '—',
+			label: 'Available balance',
+			value: availableBalance.value == null ? '—' : formatMoney(availableBalance.value),
 			icon: CurrencyIcon,
 			subtitle:
-				modrinthIncluded.value && payoutBalance.value
-					? `${formatMoney(payoutBalance.value.pending)} pending`
-					: 'No compatible confirmed balance',
+				curseForgeRewardPoints.value != null
+					? `CurseForge balance: ${formatPoints(curseForgeRewardPoints.value)} points = ${formatMoney(curseForgeRewardBalanceUsd.value)}`
+					: pending != null
+						? `${formatMoney(pending)} pending on Modrinth`
+						: 'No provider balance available',
 		},
 		{
-			label: 'Paid',
-			value:
-				modrinthIncluded.value && payoutBalance.value
-					? formatMoney(payoutBalance.value.withdrawn_lifetime)
-					: '—',
+			label: `Paid · ${periodDays.value}d`,
+			value: formatMoney(paidCurrent.value),
 			icon: CurrencyIcon,
-			subtitle: 'Lifetime provider-confirmed withdrawals',
+			subtitle: 'Settled withdrawals in the selected period',
 		},
 		{
 			label: 'Sources included',
 			value: `${includedProviderCount.value}/2`,
 			icon: ChartIcon,
-			subtitle: 'Estimated, confirmed and paid are never mixed',
+			subtitle: 'Earnings, balances and paid withdrawals keep separate settlement semantics',
 		},
 	]
 })
 
 const hasVisibleData = computed(() => {
-	if (sourceMode.value === 'curseforge') return false
-	return modrinthIncluded.value && modrinthProjects.value.length > 0
+	if (metricMode.value === 'downloads') {
+		return (modrinthIncluded.value && modrinthProjects.value.length > 0) || curseForgeDownloadsIncluded.value
+	}
+	return modrinthIncluded.value || curseForgeMoneyIncluded.value
 })
 
+const needsCurseForgePortalLogin = computed(() =>
+	curseForgeSelectable.value && (!curseForgeAnalytics.value?.connected || curseForgeAnalytics.value?.needsLogin),
+)
+
 const pageNotice = computed(() => {
-	if (sourceMode.value === 'curseforge') {
+	if (errorMessage.value && sourceMode.value !== 'curseforge') return errorMessage.value
+	if (curseForgeErrorMessage.value && sourceMode.value !== 'modrinth') return curseForgeErrorMessage.value
+	if (needsCurseForgePortalLogin.value) {
 		return curseForgeConnected.value
-			? 'CurseForge is connected, but its author analytics adapter is not wired yet. This tab is intentionally not filled with guessed data.'
-			: 'Connect CurseForge to prepare provider-native analytics. Fodrinth will not invent or infer private author statistics.'
+			? 'CurseForge publishing is connected, but private creator analytics uses your CurseForge Authors browser session. Open the Author Dashboard, sign in there once, then refresh analytics.'
+			: 'CurseForge creator analytics uses a CurseForge Authors browser session. Open the Author Dashboard and sign in; the publishing API token is a separate credential.'
 	}
-	if (!modrinthCredentials.value) {
+	if (!modrinthCredentials.value && sourceMode.value === 'modrinth') {
 		return 'Sign into Modrinth to load creator analytics for your projects.'
 	}
-	if (errorMessage.value) return errorMessage.value
-	if (sourceMode.value === 'combined' && !curseForgeIncluded.value) {
-		return 'Combined currently includes Modrinth data only. CurseForge stays excluded until its analytics source is available, so totals remain semantically correct.'
+	if (sourceMode.value === 'combined' && includedProviderCount.value < 2) {
+		return 'Combined is showing every provider with compatible data currently available. Missing provider values stay excluded instead of being estimated.'
+	}
+	if (curseForgeAnalytics.value?.downloadsError && metricMode.value === 'downloads' && sourceMode.value !== 'modrinth') {
+		return `CurseForge rewards are connected, but download analytics could not be read: ${curseForgeAnalytics.value.downloadsError}`
 	}
 	return ''
 })
@@ -308,16 +580,24 @@ const providerRows = computed(() => {
 			className: 'modrinth',
 			included: !!modrinthCredentials.value,
 			projects: modrinthProjects.value.length,
-			value: metricMode.value === 'downloads' ? currentDownloads.value : currentRevenue.value,
+			value: metricMode.value === 'downloads' ? modrinthCurrentDownloads.value : modrinthCurrentRevenue.value,
+			detail: null,
 		})
 	}
 	if (sourceMode.value !== 'modrinth') {
 		rows.push({
 			provider: 'CurseForge',
 			className: 'curseforge',
-			included: false,
-			projects: null,
-			value: null,
+			included: curseForgeIncluded.value,
+			projects:
+				metricMode.value === 'downloads'
+					? curseForgeDownloads.value?.projects?.length ?? 0
+					: buildCurseForgeEarningsByProject().size,
+			value: metricMode.value === 'downloads' ? curseForgeCurrentDownloads.value : curseForgeCurrentRevenue.value,
+			detail:
+				metricMode.value === 'monetization' && curseForgeIncluded.value
+					? `${formatPoints(curseForgeCurrentPoints.value)} points`
+					: null,
 		})
 	}
 	return rows
@@ -339,60 +619,102 @@ function trendLabel(change) {
 	return `${sign}${change.toFixed(1)}%`
 }
 
+async function refreshModrinthAnalytics() {
+	modrinthCredentials.value = await getModrinthCredentials()
+	if (!modrinthCredentials.value?.user_id) {
+		modrinthProjects.value = []
+		analyticsResponse.value = null
+		payoutBalance.value = null
+		payoutHistory.value = []
+		return
+	}
+
+	modrinthProjects.value = await get_user_projects(modrinthCredentials.value.user_id)
+	const projectIds = modrinthProjects.value.map((project) => project.id).filter(Boolean)
+	if (projectIds.length === 0) {
+		analyticsResponse.value = null
+		payoutBalance.value = null
+		payoutHistory.value = []
+		return
+	}
+
+	const end = new Date()
+	const start = new Date(end.getTime() - periodDays.value * 2 * DAY_MS)
+	const request = {
+		time_range: {
+			start: start.toISOString(),
+			end: end.toISOString(),
+			resolution: { slices: periodDays.value * 2 },
+		},
+		project_ids: projectIds,
+		return_metrics: {
+			project_downloads: { bucket_by: ['project_id'] },
+			project_revenue: { bucket_by: ['project_id'] },
+		},
+	}
+
+	const [analyticsResult, payoutResult, historyResult] = await Promise.allSettled([
+		client.labrinth.analytics_v3.fetch(request),
+		client.labrinth.payout_v3.getBalance(),
+		client.labrinth.payout_v3.getHistory(),
+	])
+
+	if (analyticsResult.status === 'fulfilled') {
+		analyticsResponse.value = analyticsResult.value
+	} else {
+		analyticsResponse.value = null
+		throw analyticsResult.reason
+	}
+	payoutBalance.value = payoutResult.status === 'fulfilled' ? payoutResult.value : null
+	payoutHistory.value = historyResult.status === 'fulfilled' ? historyResult.value : []
+}
+
+async function refreshCurseForgeAnalytics() {
+	curseForgeErrorMessage.value = ''
+	try {
+		curseForgeAnalytics.value = await getCurseForgeAuthorAnalytics(periodDays.value)
+	} catch (error) {
+		console.error('Failed to load CurseForge creator analytics', error)
+		curseForgeAnalytics.value = null
+		curseForgeErrorMessage.value =
+			error instanceof Error
+				? `Could not load CurseForge analytics: ${error.message}`
+				: `Could not load CurseForge analytics: ${String(error)}`
+	}
+}
+
 async function refreshAnalytics() {
 	loading.value = true
 	errorMessage.value = ''
 	try {
-		modrinthCredentials.value = await getModrinthCredentials()
-		if (!modrinthCredentials.value?.user_id) {
-			modrinthProjects.value = []
-			analyticsResponse.value = null
-			payoutBalance.value = null
-			return
+		const jobs = []
+		if (sourceMode.value !== 'curseforge') {
+			jobs.push(
+				refreshModrinthAnalytics().catch((error) => {
+					console.error('Failed to load Modrinth analytics', error)
+					errorMessage.value =
+						error instanceof Error
+							? `Could not load Modrinth analytics: ${error.message}`
+							: 'Could not load Modrinth analytics.'
+				}),
+			)
 		}
-
-		modrinthProjects.value = await get_user_projects(modrinthCredentials.value.user_id)
-		const projectIds = modrinthProjects.value.map((project) => project.id).filter(Boolean)
-		if (projectIds.length === 0) {
-			analyticsResponse.value = null
-			payoutBalance.value = null
-			return
-		}
-
-		const end = new Date()
-		const start = new Date(end.getTime() - periodDays.value * 2 * 24 * 60 * 60 * 1000)
-		const request = {
-			time_range: {
-				start: start.toISOString(),
-				end: end.toISOString(),
-				resolution: { slices: periodDays.value * 2 },
-			},
-			project_ids: projectIds,
-			return_metrics: {
-				project_downloads: { bucket_by: ['project_id'] },
-				project_revenue: { bucket_by: ['project_id'] },
-			},
-		}
-
-		const [analyticsResult, payoutResult] = await Promise.allSettled([
-			client.labrinth.analytics_v3.fetch(request),
-			client.labrinth.payout_v3.getBalance(),
-		])
-
-		if (analyticsResult.status === 'fulfilled') {
-			analyticsResponse.value = analyticsResult.value
-		} else {
-			analyticsResponse.value = null
-			throw analyticsResult.reason
-		}
-
-		payoutBalance.value = payoutResult.status === 'fulfilled' ? payoutResult.value : null
-	} catch (error) {
-		console.error('Failed to load Fodrinth analytics', error)
-		errorMessage.value =
-			error instanceof Error ? `Could not load Modrinth analytics: ${error.message}` : 'Could not load Modrinth analytics.'
+		if (sourceMode.value !== 'modrinth') jobs.push(refreshCurseForgeAnalytics())
+		await Promise.all(jobs)
 	} finally {
 		loading.value = false
+	}
+}
+
+async function connectCurseForgeAnalytics() {
+	openingCurseForgePortal.value = true
+	try {
+		await openCurseForgeAuthorPortal()
+	} catch (error) {
+		curseForgeErrorMessage.value =
+			error instanceof Error ? error.message : `Could not open CurseForge Authors: ${String(error)}`
+	} finally {
+		openingCurseForgePortal.value = false
 	}
 }
 
@@ -402,6 +724,7 @@ function updateCurseForgeState() {
 }
 
 watch(periodDays, () => void refreshAnalytics())
+watch(sourceMode, () => void refreshAnalytics())
 
 onMounted(() => {
 	window.addEventListener(CURSEFORGE_AUTH_CHANGED_EVENT, updateCurseForgeState)
@@ -420,7 +743,7 @@ onBeforeUnmount(() => {
 				<div>
 					<h1 class="m-0 text-2xl font-semibold text-contrast md:text-3xl">Analytics</h1>
 					<p class="mb-0 mt-1 max-w-3xl text-secondary">
-						Unified creator analytics across Modrinth and CurseForge, without mixing metrics that mean different things.
+						Unified creator analytics across Modrinth and CurseForge, while preserving provider-native metric semantics.
 					</p>
 				</div>
 				<button
@@ -491,8 +814,20 @@ onBeforeUnmount(() => {
 				</div>
 			</div>
 
-			<div v-if="pageNotice" class="rounded-xl border border-solid border-surface-5 bg-surface-2 px-4 py-3 text-sm text-secondary">
-				{{ pageNotice }}
+			<div
+				v-if="pageNotice"
+				class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-solid border-surface-5 bg-surface-2 px-4 py-3 text-sm text-secondary"
+			>
+				<span class="min-w-0 flex-1">{{ pageNotice }}</span>
+				<button
+					v-if="needsCurseForgePortalLogin"
+					type="button"
+					class="rounded-lg border border-solid border-[#ff7849]/40 bg-[#ff7849]/10 px-3 py-1.5 font-semibold text-[#ff8c66] transition-colors hover:bg-[#ff7849]/20 disabled:opacity-60"
+					:disabled="openingCurseForgePortal"
+					@click="connectCurseForgeAnalytics"
+				>
+					{{ openingCurseForgePortal ? 'Opening…' : 'Open Author Dashboard' }}
+				</button>
 			</div>
 
 			<div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -529,8 +864,16 @@ onBeforeUnmount(() => {
 						</p>
 					</div>
 					<div class="flex items-center gap-4 text-xs text-secondary">
-						<span class="flex items-center gap-2"><i class="provider-dot modrinth"></i>Modrinth</span>
-						<span class="flex items-center gap-2 opacity-60"><i class="provider-dot curseforge"></i>CurseForge</span>
+						<span
+							v-if="sourceMode !== 'curseforge'"
+							class="flex items-center gap-2"
+							:class="{ 'opacity-40': !modrinthIncluded }"
+						><i class="provider-dot modrinth"></i>Modrinth</span>
+						<span
+							v-if="sourceMode !== 'modrinth'"
+							class="flex items-center gap-2"
+							:class="{ 'opacity-40': !curseForgeIncluded }"
+						><i class="provider-dot curseforge"></i>CurseForge</span>
 					</div>
 				</div>
 
@@ -545,7 +888,7 @@ onBeforeUnmount(() => {
 						<div class="max-w-md">
 							<ChartIcon class="mx-auto size-8 text-secondary" />
 							<h3 class="mb-1 mt-3 text-base font-semibold text-contrast">No chart data available</h3>
-							<p class="m-0 text-sm text-secondary">Connect a supported provider or choose a range with analytics data.</p>
+							<p class="m-0 text-sm text-secondary">The selected provider did not expose a usable time series for this range.</p>
 						</div>
 					</div>
 					<div v-else class="grid h-full grid-cols-[64px_1fr] grid-rows-[1fr_24px] gap-x-3">
@@ -581,12 +924,13 @@ onBeforeUnmount(() => {
 						<div class="min-w-0 flex-1">
 							<div class="font-semibold text-contrast">{{ row.provider }}</div>
 							<div class="mt-0.5 text-xs text-secondary">
-								{{ row.included ? `${row.projects} project${row.projects === 1 ? '' : 's'} included` : 'Provider analytics not included yet' }}
+								{{ row.included ? `${row.projects} project${row.projects === 1 ? '' : 's'} represented` : 'Provider analytics unavailable for this metric' }}
 							</div>
 						</div>
 						<div class="text-right">
 							<div class="font-semibold" :class="row.included ? 'text-contrast' : 'text-secondary'">{{ providerValue(row) }}</div>
-							<div class="mt-0.5 text-xs text-secondary">{{ metricMode === 'downloads' ? 'period downloads' : 'period estimated revenue' }}</div>
+							<div v-if="row.detail" class="mt-0.5 text-xs text-[#ff8c66]">{{ row.detail }}</div>
+							<div v-else class="mt-0.5 text-xs text-secondary">{{ metricMode === 'downloads' ? 'period downloads' : 'period creator earnings' }}</div>
 						</div>
 					</div>
 				</div>
@@ -604,7 +948,7 @@ onBeforeUnmount(() => {
 							<tr class="text-xs uppercase tracking-wide text-secondary">
 								<th class="px-5 py-3 font-medium">Project</th>
 								<th class="px-5 py-3 font-medium">Provider</th>
-								<th class="px-5 py-3 font-medium">{{ metricMode === 'downloads' ? 'Period downloads' : 'Estimated revenue' }}</th>
+								<th class="px-5 py-3 font-medium">{{ metricMode === 'downloads' ? 'Period downloads' : 'Creator earnings' }}</th>
 								<th v-if="metricMode === 'downloads'" class="px-5 py-3 font-medium">All time</th>
 							</tr>
 						</thead>
@@ -617,12 +961,18 @@ onBeforeUnmount(() => {
 										<div class="min-w-0 flex-1">
 											<div class="truncate font-medium text-contrast">{{ row.name }}</div>
 											<div class="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-4">
-												<div class="h-full rounded-full bg-brand" :style="{ width: `${Math.max(2, (row.periodValue / maxProjectValue) * 100)}%` }"></div>
+												<div
+													class="h-full rounded-full"
+													:class="row.className === 'curseforge' ? 'bg-[#ff7849]' : 'bg-brand'"
+													:style="{ width: `${Math.max(2, (row.periodValue / maxProjectValue) * 100)}%` }"
+												></div>
 											</div>
 										</div>
 									</div>
 								</td>
-								<td class="px-5 py-3"><span class="inline-flex items-center gap-2 text-sm text-primary"><i class="provider-dot modrinth"></i>Modrinth</span></td>
+								<td class="px-5 py-3">
+									<span class="inline-flex items-center gap-2 text-sm text-primary"><i class="provider-dot" :class="row.className"></i>{{ row.provider }}</span>
+								</td>
 								<td class="px-5 py-3 font-semibold text-contrast">{{ metricMode === 'downloads' ? formatNumber(row.periodValue) : formatMoney(row.periodValue) }}</td>
 								<td v-if="metricMode === 'downloads'" class="px-5 py-3 text-primary">{{ formatNumber(row.allTimeDownloads) }}</td>
 							</tr>
@@ -632,7 +982,7 @@ onBeforeUnmount(() => {
 			</section>
 
 			<div v-if="metricMode === 'monetization'" class="rounded-xl border border-solid border-surface-5 bg-surface-2 px-4 py-3 text-xs leading-relaxed text-secondary">
-				Monetization deliberately keeps <strong class="text-primary">estimated</strong>, <strong class="text-primary">confirmed</strong>, and <strong class="text-primary">paid</strong> values separate. Fodrinth does not add balances with different settlement states or currencies just to produce a larger “total”.
+				CurseForge Reward Points are converted at <strong class="text-primary">1 point = $0.05 USD</strong>. Fodrinth still keeps <strong class="text-primary">period earnings</strong>, <strong class="text-primary">available balance</strong>, and <strong class="text-primary">paid withdrawals</strong> separate, so money in different settlement states is never silently added together.
 			</div>
 		</div>
 	</div>
