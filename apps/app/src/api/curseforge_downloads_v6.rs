@@ -100,6 +100,22 @@ pub async fn curseforge_get_author_downloads_v6<R: Runtime>(
 	let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
 	let _ = window.set_skip_taskbar(true);
 	let _ = window.show();
+	let _ = window.eval(
+		r#"(() => {
+			try {
+				window.dispatchEvent(new Event('resize'));
+				const headings = Array.from(document.querySelectorAll('body *')).filter((element) => {
+					if (element.children.length > 5) return false;
+					const text = String(element.textContent || '').replace(/\s+/g, ' ').trim();
+					return /downloads over time/i.test(text) && /per project/i.test(text);
+				});
+				const heading = headings[0];
+				if (heading) heading.scrollIntoView({ block: 'center', inline: 'nearest' });
+				window.dispatchEvent(new Event('resize'));
+			} catch (_) {}
+		})();"#,
+	);
+	tokio::time::sleep(Duration::from_millis(1200)).await;
 
 	let base_json = serde_json::to_string(&base).map_err(|error| error.to_string())?;
 	let known_json = serde_json::to_string(&known_projects).map_err(|error| error.to_string())?;
