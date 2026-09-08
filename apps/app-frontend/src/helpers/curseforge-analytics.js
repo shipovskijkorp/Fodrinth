@@ -4,7 +4,7 @@ import { getCurseForgeAuthorProjects } from '@/helpers/creator-projects.js'
 
 export const CURSEFORGE_USD_PER_POINT = 0.05
 
-const CURSEFORGE_PROJECT_PERIOD_MIGRATION = 'fodrinth.creator.analytics-cache.cf-project-periods-v2'
+const CURSEFORGE_PROJECT_PERIOD_MIGRATION = 'fodrinth.creator.analytics-cache.cf-project-periods-v3'
 if (localStorage.getItem(CURSEFORGE_PROJECT_PERIOD_MIGRATION) !== '1') {
 	localStorage.removeItem('fodrinth.creator.analytics-cache.v3')
 	localStorage.setItem(CURSEFORGE_PROJECT_PERIOD_MIGRATION, '1')
@@ -145,8 +145,6 @@ function plausiblePeriodTotal(value, allTime) {
 	const number = finiteOrNull(value)
 	if (number == null || number < 0) return null
 	const lifetime = finiteOrNull(allTime)
-	// A period is a subset of cumulative project downloads. Reject scraper candidates that
-	// accidentally summed multiple chart series/containers and became larger than lifetime.
 	if (lifetime != null && number > lifetime + 1) return null
 	return number
 }
@@ -155,6 +153,11 @@ function compactKnownProjects(projects) {
 	return (projects ?? []).map((project) => ({
 		id: String(project?.id ?? '').trim(),
 		name: String(project?.name ?? project?.title ?? project?.slug ?? project?.id ?? '').trim(),
+		allTime:
+			finiteOrNull(project?.allTime) ??
+			finiteOrNull(project?.downloads) ??
+			finiteOrNull(project?.downloadCount) ??
+			finiteOrNull(project?.download_count),
 	})).filter((project) => project.id || project.name)
 }
 
