@@ -49,16 +49,29 @@ function patchNavbar() {
 	const spacer = Array.from(navbar.children).find((element) => element.classList.contains('flex-grow'))
 	if (!spacer) return
 
-	// In upstream App.vue the settings button sits immediately after the flex spacer.
-	// Move it into the main navigation group, directly above the spacer.
-	const elementAfterSpacer = spacer.nextElementSibling
-	if (elementAfterSpacer?.tagName === 'BUTTON' && !elementAfterSpacer.classList.contains('fodrinth-curseforge-auth')) {
-		elementAfterSpacer.classList.add('fodrinth-settings-button')
-		navbar.insertBefore(elementAfterSpacer, spacer)
+	// Keep settings in the bottom group, immediately after the flex spacer.
+	// This places it directly above the CurseForge and Modrinth auth buttons.
+	let settingsButton = navbar.querySelector('.fodrinth-settings-button')
+	if (!settingsButton) {
+		const candidate = spacer.nextElementSibling
+		if (candidate?.tagName === 'BUTTON' && !candidate.classList.contains('fodrinth-curseforge-auth')) {
+			settingsButton = candidate
+			settingsButton.classList.add('fodrinth-settings-button')
+		}
 	}
 
-	if (!navbar.querySelector('.fodrinth-curseforge-auth')) {
-		spacer.insertAdjacentElement('afterend', createCurseForgeAuthButton())
+	if (settingsButton && spacer.nextElementSibling !== settingsButton) {
+		navbar.insertBefore(settingsButton, spacer.nextElementSibling)
+	}
+
+	let curseForgeButton = navbar.querySelector('.fodrinth-curseforge-auth')
+	if (!curseForgeButton) {
+		curseForgeButton = createCurseForgeAuthButton()
+	}
+
+	const authInsertPoint = settingsButton ?? spacer
+	if (authInsertPoint.nextElementSibling !== curseForgeButton) {
+		authInsertPoint.insertAdjacentElement('afterend', curseForgeButton)
 	}
 }
 
