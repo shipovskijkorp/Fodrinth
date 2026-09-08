@@ -27,6 +27,7 @@ pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
             super::curseforge_creator_bridge::curseforge_open_author_portal,
             super::curseforge_creator_bridge::curseforge_get_author_analytics,
             super::curseforge_creator_bridge::curseforge_get_author_projects,
+            super::curseforge_projects_v2::curseforge_get_author_projects_v2,
             super::curseforge_downloads::curseforge_get_author_downloads,
             super::thumbnails::get_image_thumbnail,
         ])
