@@ -80,8 +80,12 @@ const DOWNLOAD_SCRAPER: &str = r###"
 
   const toNumber = (value) => {
     if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-    if (typeof value !== 'string') return null;
-    const text = value.trim().replace(/\s/g, '');
+    if (value == null) return null;
+    if (typeof value === 'object') {
+      return toNumber(value.value ?? value.count ?? value.total ?? value.downloads ?? value.y);
+    }
+    const text = String(value).trim().replace(/\s/g, '');
+    if (!text) return null;
     const compact = text.match(/^([+-]?[\d,.]+(?:\.\d+)?)\s*([kmb])$/i);
     if (compact) {
       const base = Number(compact[1].replace(/,/g, ''));
@@ -140,7 +144,7 @@ const DOWNLOAD_SCRAPER: &str = r###"
   };
 
   const openDownloads = async () => {
-    for (let attempt = 0; attempt < 16; attempt++) {
+    for (let attempt = 0; attempt < 18; attempt++) {
       const body = norm(document.body?.innerText);
       if (/total project downloads/i.test(body) && /last 30 days/i.test(body)) return true;
       if (loggedOut()) return false;
@@ -174,7 +178,7 @@ const DOWNLOAD_SCRAPER: &str = r###"
       return;
     }
 
-    const controls = Array.from(document.querySelectorAll('button,[role="button"],[role="option"],[role="menuitem"]'));
+    let controls = Array.from(document.querySelectorAll('button,[role="button"],[role="option"],[role="menuitem"]'));
     const direct = controls.find((element) => aliases.includes(norm(element.textContent).toLowerCase()));
     if (direct) {
       direct.click();
@@ -185,9 +189,9 @@ const DOWNLOAD_SCRAPER: &str = r###"
     const likelyPicker = controls.find((element) => /last \d+ days|\d+d|months?/i.test(norm(element.textContent)));
     if (!likelyPicker) return;
     likelyPicker.click();
-    await sleep(250);
-    const options = Array.from(document.querySelectorAll('[role="option"],[role="menuitem"],button'));
-    const option = options.find((element) => aliases.includes(norm(element.textContent).toLowerCase()));
+    await sleep(300);
+    controls = Array.from(document.querySelectorAll('[role="option"],[role="menuitem"],button'));
+    const option = controls.find((element) => aliases.includes(norm(element.textContent).toLowerCase()));
     if (option) {
       option.click();
       await sleep(1800);
@@ -195,27 +199,23 @@ const DOWNLOAD_SCRAPER: &str = r###"
   };
 
   const leafElements = (root) => Array.from(root.querySelectorAll('*')).filter((element) => element.children.length === 0);
-
   const kpiMetric = (labels) => {
     const all = Array.from(document.querySelectorAll('body *'));
     const labelNodes = all.filter((element) => {
       const text = norm(element.textContent);
       return text && text.length < 90 && labels.some((pattern) => pattern.test(text));
     });
-
     let best = null;
     for (const labelNode of labelNodes) {
       let node = labelNode;
-      for (let depth = 0; depth < 5 && node; depth++, node = node.parentElement) {
+      for (let depth = 0; depth < 6 && node; depth++, node = node.parentElement) {
         const rect = node.getBoundingClientRect?.();
-        if (!rect || rect.width < 80 || rect.width > 720 || rect.height < 40 || rect.height > 340) continue;
+        if (!rect || rect.width < 80 || rect.width > 760 || rect.height < 40 || rect.height > 360) continue;
         const text = norm(node.innerText || node.textContent);
-        if (text.length > 420) continue;
-
+        if (text.length > 460) continue;
         const numericLeaves = leafElements(node).map((element) => {
           const raw = norm(element.textContent);
-          if (!raw || raw.includes('%')) return null;
-          if (labels.some((pattern) => pattern.test(raw))) return null;
+          if (!raw || raw.includes('%') || labels.some((pattern) => pattern.test(raw))) return null;
           const value = toNumber(raw);
           if (value == null) return null;
           const fontSize = Number.parseFloat(getComputedStyle(element).fontSize || '0') || 0;
@@ -236,7 +236,7 @@ const DOWNLOAD_SCRAPER: &str = r###"
   };
 
   const flatten = (value, prefix = '', depth = 0, out = []) => {
-    if (depth > 5 || value == null) return out;
+    if (depth > 6 || value == null || typeof value === 'function') return out;
     if (Array.isArray(value)) return out;
     if (typeof value !== 'object') {
       out.push([prefix, value]);
@@ -245,19 +245,19 @@ const DOWNLOAD_SCRAPER: &str = r###"
     for (const [key, child] of Object.entries(value)) {
       const path = prefix ? `${prefix}.${key}` : key;
       if (child != null && typeof child === 'object' && !Array.isArray(child)) flatten(child, path, depth + 1, out);
-      else if (!Array.isArray(child)) out.push([path, child]);
+      else if (!Array.isArray(child) && typeof child !== 'function') out.push([path, child]);
     }
     return out;
   };
 
   const contextName = (value, path) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return path;
-    const label = norm(value.metric ?? value.metricName ?? value.name ?? value.label ?? value.title ?? value.key ?? value.type ?? '');
+    const label = norm(value.metric ?? value.metricName ?? value.name ?? value.label ?? value.title ?? value.key ?? value.type ?? value.seriesName ?? '');
     return `${path} ${label}`.trim();
   };
 
   const dateFromFlat = (flat) => {
-    const preferred = flat.filter(([key]) => /(^|\.)(date|day|time|timestamp|bucket|x|createdAt)$/i.test(key));
+    const preferred = flat.filter(([key]) => /(^|\.)(date|day|time|timestamp|bucket|x|createdAt|created_at)$/i.test(key));
     const loose = flat.filter(([key]) => /date|day|time|timestamp|bucket/i.test(key));
     for (const [, value] of [...preferred, ...loose]) {
       const date = toDate(value);
@@ -268,7 +268,7 @@ const DOWNLOAD_SCRAPER: &str = r###"
 
   const numberFromFlat = (flat, context, unique) => {
     const tests = unique
-      ? [/unique.*download|download.*unique/i, /unique/i]
+      ? [/unique.*download|download.*unique/i, /(^|\.)unique$/i]
       : [/total.*download|download.*total/i, /downloads?|downloadCount|download_count/i];
     for (const test of tests) {
       const entry = flat.find(([key, value]) => test.test(key) && toNumber(value) != null);
@@ -318,6 +318,47 @@ const DOWNLOAD_SCRAPER: &str = r###"
     addCandidate(uniqueRows, 'unique', context);
   };
 
+  const considerParallelArrays = (object, context) => {
+    if (!object || typeof object !== 'object' || Array.isArray(object)) return;
+    const entries = Object.entries(object);
+    const dateEntry = entries.find(([key, value]) =>
+      /(^|_)(labels?|categories|dates?|days?|buckets?|timestamps?|x)$/i.test(key) &&
+      Array.isArray(value) && value.length >= 2 && value.filter((item) => toDate(item)).length >= 2,
+    );
+    if (!dateEntry) return;
+    const dates = dateEntry[1].map(toDate);
+    for (const [key, values] of entries) {
+      if (!Array.isArray(values) || values.length !== dates.length || key === dateEntry[0]) continue;
+      const named = `${context}.${key}`;
+      let kind = /unique/i.test(named) ? 'unique' : /download|total/i.test(named) && !/unique/i.test(named) ? 'total' : null;
+      if (!kind && /(^|_)(values?|counts?|y)$/i.test(key) && /download|unique|total/i.test(context)) {
+        kind = /unique/i.test(context) ? 'unique' : 'total';
+      }
+      if (!kind) continue;
+      const rows = dates.map((date, index) => ({ date, value: toNumber(values[index]) }));
+      addCandidate(rows, kind, named, 55);
+    }
+  };
+
+  const considerColumns = (items, context) => {
+    if (!Array.isArray(items) || items.length < 2) return;
+    const columns = items.filter((item) => item && typeof item === 'object' && !Array.isArray(item) && Array.isArray(item.values ?? item.data));
+    if (columns.length < 2) return;
+    const dateColumn = columns.find((column) => /date|day|time|timestamp|bucket|x/i.test(norm(column.name ?? column.key ?? column.label)));
+    if (!dateColumn) return;
+    const dates = (dateColumn.values ?? dateColumn.data).map(toDate);
+    if (dates.filter(Boolean).length < 2) return;
+    for (const column of columns) {
+      if (column === dateColumn) continue;
+      const name = `${context}.${norm(column.name ?? column.key ?? column.label)}`;
+      const kind = /unique/i.test(name) ? 'unique' : /download|total/i.test(name) && !/unique/i.test(name) ? 'total' : null;
+      if (!kind) continue;
+      const values = column.values ?? column.data;
+      if (values.length !== dates.length) continue;
+      addCandidate(dates.map((date, index) => ({ date, value: toNumber(values[index]) })), kind, name, 60);
+    }
+  };
+
   const considerDataset = (dataset, context) => {
     if (!dataset || typeof dataset !== 'object') return;
     const name = contextName(dataset, context);
@@ -326,7 +367,7 @@ const DOWNLOAD_SCRAPER: &str = r###"
         : Array.isArray(dataset.points) ? dataset.points
           : null;
     if (!values || values.length < 2) return;
-    const kind = /unique/i.test(name) ? 'unique' : /download|total/i.test(name) ? 'total' : null;
+    const kind = /unique/i.test(name) ? 'unique' : /download|total/i.test(name) && !/unique/i.test(name) ? 'total' : null;
     if (!kind) return;
     const rows = [];
     for (const point of values) {
@@ -337,7 +378,7 @@ const DOWNLOAD_SCRAPER: &str = r###"
         value = toNumber(point[1]);
       } else if (point && typeof point === 'object') {
         date = toDate(point.x ?? point.date ?? point.time ?? point.timestamp ?? point.day ?? point.bucket);
-        value = toNumber(point.y ?? point.value ?? point.count ?? point.total);
+        value = toNumber(point.y ?? point.value ?? point.count ?? point.total ?? point.downloads);
       }
       if (date && value != null) rows.push({ date, value });
     }
@@ -358,13 +399,9 @@ const DOWNLOAD_SCRAPER: &str = r###"
         const name = contextName(dataset, context);
         const values = Array.isArray(dataset.data) ? dataset.data : Array.isArray(dataset.values) ? dataset.values : null;
         if (!values || values.length !== labels.length) continue;
-        const kind = /unique/i.test(name) ? 'unique' : /download|total/i.test(name) ? 'total' : null;
+        const kind = /unique/i.test(name) ? 'unique' : /download|total/i.test(name) && !/unique/i.test(name) ? 'total' : null;
         if (!kind) continue;
-        const rows = labels.map((date, index) => ({
-          date,
-          value: toNumber(values[index]?.value ?? values[index]?.y ?? values[index]),
-        }));
-        addCandidate(rows, kind, name, 40);
+        addCandidate(labels.map((date, index) => ({ date, value: toNumber(values[index]?.value ?? values[index]?.y ?? values[index]) })), kind, name, 40);
       }
     }
   };
@@ -377,22 +414,29 @@ const DOWNLOAD_SCRAPER: &str = r###"
     for (const [key, raw] of entries) {
       const date = toDate(key);
       if (!date) continue;
-      const value = toNumber(raw?.value ?? raw?.count ?? raw?.total ?? raw);
+      const value = toNumber(raw?.value ?? raw?.count ?? raw?.total ?? raw?.downloads ?? raw);
       if (value != null) rows.push({ date, value });
     }
     if (rows.length < 2) return;
     addCandidate(rows, /unique/i.test(context) ? 'unique' : 'total', context, 20);
   };
 
+  const seenObjects = new WeakSet();
   const visit = (value, path = '', depth = 0) => {
-    if (depth > 16 || value == null) return;
+    if (depth > 16 || value == null || typeof value === 'function') return;
+    if (typeof value === 'object') {
+      if (seenObjects.has(value)) return;
+      seenObjects.add(value);
+    }
     if (Array.isArray(value)) {
       considerObjectRows(value, path);
+      considerColumns(value, path);
       value.forEach((child, index) => visit(child, `${path}[${index}]`, depth + 1));
       return;
     }
     if (typeof value !== 'object') return;
     const context = contextName(value, path);
+    considerParallelArrays(value, context);
     considerLabelsAndSeries(value, context);
     considerDateMap(value, context);
     for (const [key, child] of Object.entries(value)) {
@@ -403,7 +447,140 @@ const DOWNLOAD_SCRAPER: &str = r###"
     }
   };
 
-  const best = (candidates) => candidates.sort((a, b) => b.score - a.score)[0] || null;
+  const inspectReactChartProps = () => {
+    const labels = Array.from(document.querySelectorAll('body *')).filter((element) => /^downloads over time$/i.test(norm(element.textContent)));
+    const roots = [];
+    for (const label of labels) {
+      let node = label;
+      for (let depth = 0; depth < 8 && node; depth++, node = node.parentElement) {
+        if (node.querySelector?.('svg,canvas')) { roots.push(node); break; }
+      }
+    }
+    if (!roots.length) roots.push(document.body);
+    let inspected = 0;
+    for (const root of roots.slice(0, 3)) {
+      const elements = [root, ...Array.from(root.querySelectorAll('*')).slice(0, 1500)];
+      for (const element of elements) {
+        for (const key of Object.getOwnPropertyNames(element)) {
+          if (!key.startsWith('__reactProps$')) continue;
+          try {
+            visit(element[key], `react.${element.tagName?.toLowerCase?.() || 'node'}`, 0);
+            inspected++;
+          } catch (_) {}
+        }
+      }
+    }
+    return inspected;
+  };
+
+  const fitYAxis = (svg, plotBox) => {
+    const ticks = Array.from(svg.querySelectorAll('text')).map((element) => {
+      const value = toNumber(norm(element.textContent));
+      if (value == null) return null;
+      try {
+        const box = element.getBBox();
+        const y = box.y + box.height / 2;
+        if (box.x > plotBox.x + plotBox.width * 0.2) return null;
+        return { y, value };
+      } catch (_) { return null; }
+    }).filter(Boolean);
+    const unique = [];
+    for (const tick of ticks) {
+      if (!unique.some((item) => Math.abs(item.y - tick.y) < 1 && item.value === tick.value)) unique.push(tick);
+    }
+    if (unique.length < 2) return null;
+    const n = unique.length;
+    const meanY = unique.reduce((sum, tick) => sum + tick.y, 0) / n;
+    const meanV = unique.reduce((sum, tick) => sum + tick.value, 0) / n;
+    let covariance = 0;
+    let variance = 0;
+    for (const tick of unique) {
+      covariance += (tick.y - meanY) * (tick.value - meanV);
+      variance += (tick.y - meanY) ** 2;
+    }
+    if (variance <= 0) return null;
+    const slope = covariance / variance;
+    const intercept = meanV - slope * meanY;
+    return Number.isFinite(slope) && slope < 0 ? (y) => Math.max(0, slope * y + intercept) : null;
+  };
+
+  const extractSvgSeries = (expectedTotal) => {
+    const labels = Array.from(document.querySelectorAll('body *')).filter((element) => /^downloads over time$/i.test(norm(element.textContent)));
+    const svgs = [];
+    for (const label of labels) {
+      let node = label;
+      for (let depth = 0; depth < 8 && node; depth++, node = node.parentElement) {
+        const found = Array.from(node.querySelectorAll?.('svg') || []);
+        if (found.length) { svgs.push(...found); break; }
+      }
+    }
+    if (!svgs.length) svgs.push(...Array.from(document.querySelectorAll('svg')));
+
+    let best = null;
+    for (const svg of svgs) {
+      for (const path of Array.from(svg.querySelectorAll('path[d]'))) {
+        try {
+          const length = path.getTotalLength();
+          const box = path.getBBox();
+          const style = getComputedStyle(path);
+          if (!Number.isFinite(length) || length < 80 || box.width < 120 || box.height < 2) continue;
+          if (!style.stroke || style.stroke === 'none' || style.stroke === 'rgba(0, 0, 0, 0)') continue;
+          const sample = [];
+          for (let i = 0; i <= 40; i++) sample.push(path.getPointAtLength((length * i) / 40));
+          const averageY = sample.reduce((sum, point) => sum + point.y, 0) / sample.length;
+          const score = box.width * 3 + Math.min(length, 2000) - averageY * 0.05;
+          if (!best || score > best.score) best = { svg, path, length, box, score };
+        } catch (_) {}
+      }
+    }
+    if (!best) return [];
+
+    const yToValue = fitYAxis(best.svg, best.box);
+    const buckets = Array.from({ length: periodDays }, () => []);
+    for (let i = 0; i <= 800; i++) {
+      try {
+        const point = best.path.getPointAtLength((best.length * i) / 800);
+        const ratio = (point.x - best.box.x) / Math.max(best.box.width, 1);
+        const index = Math.max(0, Math.min(periodDays - 1, Math.round(ratio * (periodDays - 1))));
+        buckets[index].push(point.y);
+      } catch (_) {}
+    }
+    let values = buckets.map((ys) => {
+      if (!ys.length) return null;
+      const y = ys.reduce((sum, value) => sum + value, 0) / ys.length;
+      return yToValue ? yToValue(y) : Math.max(0, best.box.y + best.box.height - y);
+    });
+
+    for (let i = 0; i < values.length; i++) {
+      if (values[i] != null) continue;
+      let left = i - 1;
+      while (left >= 0 && values[left] == null) left--;
+      let right = i + 1;
+      while (right < values.length && values[right] == null) right++;
+      if (left >= 0 && right < values.length) values[i] = values[left] + ((values[right] - values[left]) * (i - left)) / (right - left);
+      else if (left >= 0) values[i] = values[left];
+      else if (right < values.length) values[i] = values[right];
+      else values[i] = 0;
+    }
+
+    const sum = values.reduce((total, value) => total + Math.max(0, value || 0), 0);
+    if (Number.isFinite(expectedTotal) && expectedTotal >= 0 && sum > 0) {
+      const ratio = expectedTotal / sum;
+      const shouldNormalize = !yToValue || ratio < 0.7 || ratio > 1.3;
+      if (shouldNormalize) values = values.map((value) => value * ratio);
+    }
+
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - (periodDays - 1));
+    return values.map((value, index) => ({
+      date: new Date(start.getTime() + index * DAY).toISOString(),
+      total: Math.max(0, value || 0),
+      unique: null,
+    }));
+  };
+
+  const bestCandidate = (candidates) => candidates.sort((a, b) => b.score - a.score)[0] || null;
   const mergeSeries = (totalRows, uniqueRows) => {
     const map = new Map();
     for (const row of totalRows || []) {
@@ -431,6 +608,7 @@ const DOWNLOAD_SCRAPER: &str = r###"
       await sleep(250);
     }
 
+    if (Array.isArray(window.__FODRINTH_CF_CAPTURES__)) window.__FODRINTH_CF_CAPTURES__.length = 0;
     await openDownloads();
     if (loggedOut()) {
       window.__FODRINTH_CF_DOWNLOAD_V2_RESULT__ = { needsLogin: true, current: null, previous: null, allTime: null, uniqueCurrent: null, uniquePrevious: null, series: [], projects: [] };
@@ -438,30 +616,34 @@ const DOWNLOAD_SCRAPER: &str = r###"
     }
     await selectPeriod();
 
-    // The beta dashboard loads several chart requests after the shell is already visible.
-    // Wait for those responses instead of snapshotting the capture bucket immediately.
     let lastCaptureCount = -1;
     let stablePasses = 0;
-    for (let attempt = 0; attempt < 24; attempt++) {
+    for (let attempt = 0; attempt < 28; attempt++) {
       await sleep(350);
       const count = (window.__FODRINTH_CF_CAPTURES__ || []).length;
       if (count === lastCaptureCount) stablePasses++;
       else stablePasses = 0;
       lastCaptureCount = count;
-      if (stablePasses >= 4 && attempt >= 6) break;
+      if (stablePasses >= 5 && attempt >= 8) break;
     }
 
     const captured = captures();
     for (const capture of captured) visit(capture.value, capture.url, 0);
-    const total = best(totalCandidates);
-    const unique = best(uniqueCandidates);
-    const series = mergeSeries(total?.rows, unique?.rows);
+    const reactPropsInspected = inspectReactChartProps();
 
     const yesterdayCard = kpiMetric([/^yesterday(?:\s+vs\.?\s+same day last week)?$/i, /^yesterday$/i]);
     const sevenCard = kpiMetric([/^last 7 days$/i]);
     const thirtyCard = kpiMetric([/^last 30 days$/i]);
     const allTimeCard = kpiMetric([/^total project downloads$/i, /^all[- ]time downloads$/i, /^total downloads$/i]);
     const uniqueCard = kpiMetric([/^unique downloads$/i, /^total unique downloads$/i]);
+    const periodCard = periodDays === 7 ? sevenCard : periodDays === 30 ? thirtyCard : null;
+
+    const total = bestCandidate(totalCandidates);
+    const unique = bestCandidate(uniqueCandidates);
+    let series = mergeSeries(total?.rows, unique?.rows);
+    if (!series.some((row) => Number.isFinite(row.total))) {
+      series = extractSvgSeries(periodCard?.value ?? null);
+    }
 
     const now = Date.now();
     const currentStart = now - periodDays * DAY;
@@ -476,27 +658,28 @@ const DOWNLOAD_SCRAPER: &str = r###"
       return Number.isFinite(time) && time >= start && time < end && Number.isFinite(row[field]);
     }).length;
 
-    const periodCard = periodDays === 7 ? sevenCard : periodDays === 30 ? thirtyCard : null;
-    const enoughCurrentSeries = countRange('total', currentStart, now + DAY) >= Math.min(periodDays, 5);
+    const enoughCurrentSeries = countRange('total', currentStart - DAY, now + DAY) >= Math.min(periodDays, 5);
     const enoughPreviousSeries = countRange('total', previousStart, currentStart) >= Math.min(periodDays, 5);
-    const enoughUniqueSeries = countRange('unique', currentStart, now + DAY) >= Math.min(periodDays, 5);
+    const enoughUniqueSeries = countRange('unique', currentStart - DAY, now + DAY) >= Math.min(periodDays, 5);
 
-    const current = enoughCurrentSeries ? sumRange('total', currentStart, now + DAY) : periodCard?.value ?? null;
+    const current = periodCard?.value ?? (enoughCurrentSeries ? sumRange('total', currentStart - DAY, now + DAY) : null);
     let previous = enoughPreviousSeries ? sumRange('total', previousStart, currentStart) : null;
     if (previous == null && current != null && Number.isFinite(periodCard?.percent) && Math.abs(100 + periodCard.percent) > 0.0001) {
       previous = current / (1 + periodCard.percent / 100);
     }
-    const uniqueCurrent = enoughUniqueSeries ? sumRange('unique', currentStart, now + DAY) : uniqueCard?.value ?? null;
+    const uniqueCurrent = uniqueCard?.value ?? (enoughUniqueSeries ? sumRange('unique', currentStart - DAY, now + DAY) : null);
     const uniquePrevious = countRange('unique', previousStart, currentStart) >= Math.min(periodDays, 5)
       ? sumRange('unique', previousStart, currentStart)
       : null;
 
     const debug = {
       capturesSeen: captured.length,
-      totalSeriesSource: total?.context ?? null,
+      reactPropsInspected,
+      totalSeriesSource: total?.context ?? (series.length ? 'rendered-svg-fallback' : null),
       uniqueSeriesSource: unique?.context ?? null,
       totalSeriesCandidates: totalCandidates.length,
       uniqueSeriesCandidates: uniqueCandidates.length,
+      seriesPoints: series.length,
       kpi: {
         yesterday: yesterdayCard?.value ?? null,
         seven: sevenCard?.value ?? null,
@@ -541,13 +724,18 @@ const DOWNLOAD_SCRAPER: &str = r###"
 
 fn js_result_to_value(raw: String) -> Value {
     match serde_json::from_str::<Value>(&raw) {
-        Ok(Value::String(inner)) => serde_json::from_str::<Value>(&inner).unwrap_or(Value::String(inner)),
+        Ok(Value::String(inner)) => {
+            serde_json::from_str::<Value>(&inner).unwrap_or(Value::String(inner))
+        }
         Ok(value) => value,
         Err(_) => Value::String(raw),
     }
 }
 
-async fn eval_json<R: Runtime>(window: &WebviewWindow<R>, script: String) -> Result<Value, String> {
+async fn eval_json<R: Runtime>(
+    window: &WebviewWindow<R>,
+    script: String,
+) -> Result<Value, String> {
     let (sender, receiver) = tokio::sync::oneshot::channel::<String>();
     let sender = Arc::new(Mutex::new(Some(sender)));
     let callback_sender = sender.clone();
@@ -574,7 +762,8 @@ async fn wait_for_document<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), 
     while started.elapsed() < Duration::from_secs(20) {
         if let Ok(value) = eval_json(
             window,
-            "JSON.stringify({ready: document.readyState, body: document.body?.innerText?.length || 0})".to_string(),
+            "JSON.stringify({ready: document.readyState, body: document.body?.innerText?.length || 0})"
+                .to_string(),
         )
         .await
         {
@@ -608,7 +797,7 @@ async fn ensure_window<R: Runtime>(app: &AppHandle<R>) -> Result<WebviewWindow<R
 
 async fn poll_result<R: Runtime>(window: &WebviewWindow<R>) -> Result<Value, String> {
     let started = std::time::Instant::now();
-    while started.elapsed() < Duration::from_secs(42) {
+    while started.elapsed() < Duration::from_secs(45) {
         let value = eval_json(
             window,
             "JSON.stringify(window.__FODRINTH_CF_DOWNLOAD_V2_RESULT__ ?? null)".to_string(),
