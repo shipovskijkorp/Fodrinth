@@ -73,11 +73,39 @@ function mergeDownloadProjects(downloadProjects, authorProjects) {
 	return merged
 }
 
+function errorText(error) {
+	return error instanceof Error ? error.message : String(error)
+}
+
+function hasDownloadPayload(downloads) {
+	if (!downloads || typeof downloads !== 'object') return false
+	return (
+		finiteOrNull(downloads.current) != null ||
+		finiteOrNull(downloads.previous) != null ||
+		finiteOrNull(downloads.allTime) != null ||
+		(downloads.series?.length ?? 0) > 0 ||
+		(downloads.projects?.length ?? 0) > 0
+	)
+}
+
 export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
-	const base = await invoke('plugin:utils|curseforge_get_author_analytics', {
-		periodDays,
-	})
-	if (base?.needsLogin || base?.connected === false) return base
+	let base = {
+		connected: false,
+		needsLogin: false,
+		rewardPoints: null,
+		rewardBalanceUsd: null,
+		earnings: [],
+		withdrawals: [],
+		downloads: null,
+	}
+	let baseError = ''
+	try {
+		base = await invoke('plugin:utils|curseforge_get_author_analytics', {
+			periodDays,
+		})
+	} catch (error) {
+		baseError = errorText(error)
+	}
 
 	let freshDownloads = null
 	let downloadsError = ''
@@ -89,57 +117,87 @@ export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
 			console.info('[Fodrinth] CurseForge download analytics', freshDownloads.debug)
 		}
 	} catch (error) {
-		downloadsError = error instanceof Error ? error.message : String(error)
+		downloadsError = errorText(error)
 	}
 
 	let authorProjects = []
+	let projectsConnected = false
+	let projectsNeedLogin = false
 	try {
 		const response = await getCurseForgeAuthorProjects()
-		if (response?.needsLogin) {
-			return {
-				...base,
-				connected: false,
-				needsLogin: true,
-				downloads: null,
-				downloadsError,
-			}
-		}
+		projectsConnected = response?.connected !== false
+		projectsNeedLogin = !!response?.needsLogin
 		authorProjects = Array.isArray(response?.projects) ? response.projects : []
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error)
+		const message = errorText(error)
 		downloadsError = downloadsError ? `${downloadsError}; projects: ${message}` : `projects: ${message}`
 	}
 
-	const projects = mergeDownloadProjects(freshDownloads?.projects, authorProjects)
+	const fallbackDownloads = base?.downloads && typeof base.downloads === 'object' ? base.downloads : null
+	const primaryDownloads = hasDownloadPayload(freshDownloads) ? freshDownloads : fallbackDownloads
+	const projectSources = [
+		...(Array.isArray(fallbackDownloads?.projects) ? fallbackDownloads.projects : []),
+		...(Array.isArray(freshDownloads?.projects) ? freshDownloads.projects : []),
+	]
+	const projects = mergeDownloadProjects(projectSources, authorProjects)
 	const projectAllTimeValues = projects.map((project) => finiteOrNull(project.allTime)).filter((value) => value != null)
 	const projectAllTime = projectAllTimeValues.length
 		? projectAllTimeValues.reduce((total, value) => total + value, 0)
 		: null
 
+	const series = Array.isArray(freshDownloads?.series) && freshDownloads.series.length
+		? freshDownloads.series
+		: Array.isArray(fallbackDownloads?.series)
+			? fallbackDownloads.series
+			: []
+
 	const downloads = {
-		current: optionalNumber(freshDownloads?.current),
-		previous: optionalNumber(freshDownloads?.previous),
-		allTime: optionalNumber(projectAllTime ?? freshDownloads?.allTime),
-		uniqueCurrent: optionalNumber(freshDownloads?.uniqueCurrent),
-		uniquePrevious: optionalNumber(freshDownloads?.uniquePrevious),
-		yesterday: optionalNumber(freshDownloads?.yesterday),
-		yesterdayChangePercent: optionalNumber(freshDownloads?.yesterdayChangePercent),
-		series: Array.isArray(freshDownloads?.series) ? freshDownloads.series : [],
+		current: optionalNumber(primaryDownloads?.current),
+		previous: optionalNumber(primaryDownloads?.previous),
+		allTime: optionalNumber(projectAllTime ?? primaryDownloads?.allTime),
+		uniqueCurrent: optionalNumber(primaryDownloads?.uniqueCurrent),
+		uniquePrevious: optionalNumber(primaryDownloads?.uniquePrevious),
+		yesterday: optionalNumber(primaryDownloads?.yesterday),
+		yesterdayChangePercent: optionalNumber(primaryDownloads?.yesterdayChangePercent),
+		series,
 		projects,
-		debug: freshDownloads?.debug ?? null,
+		debug: freshDownloads?.debug ?? fallbackDownloads?.debug ?? null,
 	}
 
-	if (freshDownloads?.error) {
-		downloadsError = downloadsError ? `${downloadsError}; ${freshDownloads.error}` : String(freshDownloads.error)
+	for (const error of [freshDownloads?.error, fallbackDownloads?.error, base?.downloadsError]) {
+		if (!error) continue
+		downloadsError = downloadsError ? `${downloadsError}; ${String(error)}` : String(error)
 	}
+
+	const hasDownloads = hasDownloadPayload(downloads)
+	const hasRewards =
+		(base?.earnings?.length ?? 0) > 0 ||
+		(base?.withdrawals?.length ?? 0) > 0 ||
+		finiteOrNull(base?.rewardPoints) != null ||
+		finiteOrNull(base?.rewardBalanceUsd) != null
+	const connected =
+		hasDownloads ||
+		authorProjects.length > 0 ||
+		projectsConnected ||
+		hasRewards ||
+		base?.connected === true ||
+		freshDownloads?.connected === true
+	const needsLogin = !connected && (
+		!!base?.needsLogin ||
+		!!freshDownloads?.needsLogin ||
+		projectsNeedLogin
+	)
 
 	return {
 		...base,
-		connected: true,
-		needsLogin: !!freshDownloads?.needsLogin,
+		connected,
+		needsLogin,
 		rewardPoints: optionalNumber(base?.rewardPoints),
 		rewardBalanceUsd: optionalNumber(base?.rewardBalanceUsd),
+		earnings: Array.isArray(base?.earnings) ? base.earnings : [],
+		withdrawals: Array.isArray(base?.withdrawals) ? base.withdrawals : [],
 		downloads,
 		downloadsError: downloadsError || null,
+		baseError: baseError || null,
 	}
 }
