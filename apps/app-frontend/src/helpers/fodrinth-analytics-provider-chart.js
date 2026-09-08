@@ -131,24 +131,30 @@ function patchAxis(section, max) {
 	if (labels.length < 3) return
 	const desired = [compact.format(max), compact.format(max / 2), '0']
 	labels.forEach((label, index) => {
-		if (label.dataset.fodrinthPatchedValue && label.textContent !== label.dataset.fodrinthPatchedValue) {
-			label.dataset.fodrinthOriginalValue = label.textContent
-		}
 		if (!label.dataset.fodrinthOriginalValue) label.dataset.fodrinthOriginalValue = label.textContent
-		label.textContent = desired[index]
+		if (label.textContent !== desired[index]) label.textContent = desired[index]
 		label.dataset.fodrinthPatchedValue = desired[index]
 	})
 }
 
 function restore(section) {
-	section.querySelectorAll('[data-fodrinth-provider-chart]').forEach((element) => element.remove())
+	const overlays = section.querySelectorAll('[data-fodrinth-provider-chart]')
 	const native = section.querySelector('svg:not([data-fodrinth-provider-chart])')
+	const wasPatched = !!section.dataset.fodrinthProviderChartFingerprint || overlays.length > 0 || native?.style.display === 'none'
+	if (!wasPatched) return
+
+	overlays.forEach((element) => element.remove())
 	if (native) native.style.display = ''
 	for (const label of axisLabels(section)) {
 		if (label.dataset.fodrinthOriginalValue) label.textContent = label.dataset.fodrinthOriginalValue
 		delete label.dataset.fodrinthOriginalValue
 		delete label.dataset.fodrinthPatchedValue
 	}
+	delete section.dataset.fodrinthProviderChartFingerprint
+}
+
+function fingerprint(periodDays, modrinth, curseforge) {
+	return JSON.stringify([periodDays, modrinth, curseforge])
 }
 
 function patch() {
@@ -170,12 +176,21 @@ function patch() {
 		return
 	}
 
-	const max = Math.max(...modrinth, ...curseforge, 1)
+	const nextFingerprint = fingerprint(periodDays, modrinth, curseforge)
+	const expectedOverlays = Number(modrinth.length > 0) + Number(curseforge.length > 0)
+	const overlays = section.querySelectorAll('[data-fodrinth-provider-chart]')
 	const native = section.querySelector('svg:not([data-fodrinth-provider-chart])')
+	if (
+		section.dataset.fodrinthProviderChartFingerprint === nextFingerprint &&
+		overlays.length === expectedOverlays &&
+		native?.style.display === 'none'
+	) return
+
+	const max = Math.max(...modrinth, ...curseforge, 1)
 	if (!native?.parentElement) return
 	const host = native.parentElement
 	native.style.display = 'none'
-	section.querySelectorAll('[data-fodrinth-provider-chart]').forEach((element) => element.remove())
+	overlays.forEach((element) => element.remove())
 
 	if (modrinth.length) {
 		host.appendChild(makeOverlay('modrinth', 'var(--color-brand, #1bd96a)', points(modrinth, max), 0.07))
@@ -184,6 +199,7 @@ function patch() {
 		host.appendChild(makeOverlay('curseforge', '#ff7849', points(curseforge, max), 0.045))
 	}
 	patchAxis(section, max)
+	section.dataset.fodrinthProviderChartFingerprint = nextFingerprint
 }
 
 function schedulePatch() {
