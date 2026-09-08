@@ -21,6 +21,10 @@ import {
 	getCurseForgeAuthorAnalytics,
 	openCurseForgeAuthorPortal,
 } from '@/helpers/curseforge-analytics.js'
+import {
+	CREATOR_PROJECT_LINKS_CHANGED_EVENT,
+	getCreatorProjectLinks,
+} from '@/helpers/creator-projects.js'
 import { get as getModrinthCredentials } from '@/helpers/mr_auth.ts'
 import { get_user_projects } from '@/helpers/users'
 
@@ -31,6 +35,9 @@ const sourceMode = ref('combined')
 const metricMode = ref('downloads')
 const viewMode = ref('total')
 const periodDays = ref(30)
+const projectSort = ref('provider')
+const syncProjects = ref(true)
+const creatorProjectLinks = ref(getCreatorProjectLinks())
 const loading = ref(false)
 const openingCurseForgePortal = ref(false)
 const errorMessage = ref('')
@@ -62,15 +69,19 @@ const periods = [
 	{ days: 30, label: 'Last 30 days' },
 	{ days: 90, label: 'Last 90 days' },
 ]
+const projectSortOptions = computed(() => [
+	{ id: 'provider', label: 'Provider' },
+	{ id: 'name', label: 'Name' },
+	{ id: 'period', label: metricMode.value === 'downloads' ? 'Period downloads' : 'Creator earnings' },
+	...(metricMode.value === 'downloads' ? [{ id: 'alltime', label: 'All-time downloads' }] : []),
+])
 
 const numberFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 })
 const compactNumberFormatter = new Intl.NumberFormat(undefined, {
 	notation: 'compact',
 	maximumFractionDigits: 1,
 })
-const pointsFormatter = new Intl.NumberFormat(undefined, {
-	maximumFractionDigits: 2,
-})
+const pointsFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 })
 const moneyFormatter = new Intl.NumberFormat(undefined, {
 	style: 'currency',
 	currency: 'USD',
@@ -96,8 +107,13 @@ function formatPoints(value) {
 }
 
 function finiteOrNull(value) {
+	if (value == null || value === '') return null
 	const number = Number(value)
 	return Number.isFinite(number) ? number : null
+}
+
+function normalizeId(value) {
+	return String(value ?? '').trim()
 }
 
 function getMetricValue(point, kind) {
@@ -122,8 +138,7 @@ const splitAnalytics = computed(() => splitPeriods(analyticsResponse.value))
 function sumMetric(slices, kind) {
 	return slices.reduce(
 		(total, slice) =>
-			total +
-			slice.reduce((sliceTotal, point) => sliceTotal + getMetricValue(point, kind), 0),
+			total + slice.reduce((sliceTotal, point) => sliceTotal + getMetricValue(point, kind), 0),
 		0,
 	)
 }
@@ -140,8 +155,8 @@ function buildProjectTotals(slices, kind) {
 		for (const point of slice) {
 			if (!point?.source_project || point.metric_kind !== kind) continue
 			totals.set(
-				point.source_project,
-				(totals.get(point.source_project) ?? 0) + getMetricValue(point, kind),
+				String(point.source_project),
+				(totals.get(String(point.source_project)) ?? 0) + getMetricValue(point, kind),
 			)
 		}
 	}
@@ -174,7 +189,6 @@ function sumTransactionPoints(items, start, end) {
 const modrinthSelectable = computed(() => sourceMode.value !== 'curseforge')
 const curseForgeSelectable = computed(() => sourceMode.value !== 'modrinth')
 const modrinthIncluded = computed(() => modrinthSelectable.value && !!modrinthCredentials.value)
-
 const curseForgeDownloads = computed(() => curseForgeAnalytics.value?.downloads ?? null)
 const curseForgeDownloadsIncluded = computed(() => {
 	if (!curseForgeSelectable.value || !curseForgeAnalytics.value?.connected) return false
@@ -218,7 +232,6 @@ const modrinthAllTimeDownloads = computed(() =>
 		? modrinthProjects.value.reduce((total, project) => total + (Number(project.downloads) || 0), 0)
 		: 0,
 )
-
 const curseForgeCurrentDownloads = computed(() =>
 	curseForgeDownloadsIncluded.value ? finiteOrNull(curseForgeDownloads.value?.current) ?? 0 : 0,
 )
@@ -234,46 +247,28 @@ const curseForgeUniqueDownloads = computed(() =>
 const curseForgePreviousUniqueDownloads = computed(() =>
 	curseForgeDownloadsIncluded.value ? finiteOrNull(curseForgeDownloads.value?.uniquePrevious) : null,
 )
-
 const curseForgeCurrentRevenue = computed(() =>
 	curseForgeMoneyIncluded.value
-		? sumTransactions(
-			curseForgeAnalytics.value?.earnings,
-			rangeDates.value.start,
-			rangeDates.value.end,
-		)
+		? sumTransactions(curseForgeAnalytics.value?.earnings, rangeDates.value.start, rangeDates.value.end)
 		: 0,
 )
 const curseForgePreviousRevenue = computed(() =>
 	curseForgeMoneyIncluded.value
-		? sumTransactions(
-			curseForgeAnalytics.value?.earnings,
-			rangeDates.value.previousStart,
-			rangeDates.value.start,
-		)
+		? sumTransactions(curseForgeAnalytics.value?.earnings, rangeDates.value.previousStart, rangeDates.value.start)
 		: 0,
 )
 const curseForgeCurrentPoints = computed(() =>
 	curseForgeMoneyIncluded.value
-		? sumTransactionPoints(
-			curseForgeAnalytics.value?.earnings,
-			rangeDates.value.start,
-			rangeDates.value.end,
-		)
+		? sumTransactionPoints(curseForgeAnalytics.value?.earnings, rangeDates.value.start, rangeDates.value.end)
 		: 0,
 )
 const curseForgeRewardPoints = computed(() => finiteOrNull(curseForgeAnalytics.value?.rewardPoints))
 const curseForgeRewardBalanceUsd = computed(() => finiteOrNull(curseForgeAnalytics.value?.rewardBalanceUsd))
 const curseForgePaidCurrent = computed(() =>
 	curseForgeMoneyIncluded.value
-		? sumTransactions(
-			curseForgeAnalytics.value?.withdrawals,
-			rangeDates.value.start,
-			rangeDates.value.end,
-		)
+		? sumTransactions(curseForgeAnalytics.value?.withdrawals, rangeDates.value.start, rangeDates.value.end)
 		: 0,
 )
-
 const modrinthPaidCurrent = computed(() => {
 	if (!modrinthIncluded.value) return 0
 	return payoutHistory.value.reduce((total, transaction) => {
@@ -315,9 +310,15 @@ const uniqueDownloadChange = computed(() => {
 	return percentChange(curseForgeUniqueDownloads.value, curseForgePreviousUniqueDownloads.value)
 })
 
+function chartStartOfDay() {
+	const start = new Date(rangeDates.value.start)
+	start.setHours(0, 0, 0, 0)
+	return start.getTime()
+}
+
 function makeDailySeriesFromTransactions(items, field = 'usd') {
 	const values = Array(periodDays.value).fill(0)
-	const start = rangeDates.value.start.getTime()
+	const start = chartStartOfDay()
 	for (const item of items ?? []) {
 		const timestamp = new Date(item?.timestamp).getTime()
 		if (!Number.isFinite(timestamp) || timestamp < start || timestamp >= rangeDates.value.end.getTime()) continue
@@ -329,12 +330,12 @@ function makeDailySeriesFromTransactions(items, field = 'usd') {
 
 function makeDailySeriesFromDatedRows(rows, field) {
 	const values = Array(periodDays.value).fill(0)
-	const start = rangeDates.value.start.getTime()
+	const start = chartStartOfDay()
 	let found = false
 	for (const row of rows ?? []) {
-		const timestamp = new Date(row?.date).getTime()
-		const value = finiteOrNull(row?.[field])
-		if (!Number.isFinite(timestamp) || value == null || timestamp < start || timestamp >= rangeDates.value.end.getTime()) continue
+		const timestamp = new Date(row?.date ?? row?.timestamp ?? row?.time).getTime()
+		const value = finiteOrNull(row?.[field] ?? (field === 'total' ? row?.value : null))
+		if (!Number.isFinite(timestamp) || value == null || timestamp < start || timestamp >= rangeDates.value.end.getTime() + DAY_MS) continue
 		const index = Math.min(periodDays.value - 1, Math.max(0, Math.floor((timestamp - start) / DAY_MS)))
 		values[index] += value
 		found = true
@@ -369,7 +370,6 @@ const currentSeries = computed(() => {
 	if (sourceMode.value === 'curseforge') return curseForgeCurrentSeries.value
 	return mergeSeries(modrinthCurrentSeries.value, curseForgeCurrentSeries.value)
 })
-
 const chartPoints = computed(() => {
 	const values = currentSeries.value
 	if (values.length === 0) return ''
@@ -384,15 +384,12 @@ const chartPoints = computed(() => {
 		})
 		.join(' ')
 })
-
-const chartAreaPoints = computed(() => {
-	if (!chartPoints.value) return ''
-	return `0,220 ${chartPoints.value} 760,220`
-})
+const chartAreaPoints = computed(() => chartPoints.value ? `0,220 ${chartPoints.value} 760,220` : '')
 const chartMax = computed(() => Math.max(...currentSeries.value, 0))
 const chartTitle = computed(() =>
 	metricMode.value === 'downloads' ? 'Downloads over time' : 'Creator earnings over time',
 )
+const chartColorClass = computed(() => sourceMode.value === 'curseforge' ? 'text-curseforge' : 'text-brand')
 
 function buildCurseForgeEarningsByProject() {
 	const totals = new Map()
@@ -407,58 +404,128 @@ function buildCurseForgeEarningsByProject() {
 	return totals
 }
 
-const projectRows = computed(() => {
+const rawProjectRows = computed(() => {
 	const rows = []
 	if (modrinthIncluded.value) {
 		const kind = metricMode.value === 'downloads' ? 'downloads' : 'revenue'
 		const totals = buildProjectTotals(splitAnalytics.value.current, kind)
 		for (const project of modrinthProjects.value) {
+			const sourceId = normalizeId(project.id)
+			const periodValue = totals.get(sourceId) ?? 0
+			const allTimeDownloads = Number(project.downloads) || 0
 			rows.push({
-				id: `modrinth:${project.id}`,
+				id: `modrinth:${sourceId}`,
+				sourceId,
 				name: project.title ?? project.name ?? project.slug ?? project.id,
 				icon: project.icon_url ?? null,
 				provider: 'Modrinth',
 				className: 'modrinth',
-				periodValue: totals.get(project.id) ?? 0,
-				allTimeDownloads: Number(project.downloads) || 0,
+				periodValue,
+				allTimeDownloads,
+				parts: [{ provider: 'Modrinth', className: 'modrinth', periodValue, allTimeDownloads }],
 			})
 		}
 	}
-
 	if (curseForgeIncluded.value) {
 		if (metricMode.value === 'downloads') {
 			for (const project of curseForgeDownloads.value?.projects ?? []) {
+				const sourceId = normalizeId(project.id ?? project.name)
 				const periodValue = finiteOrNull(project.period) ?? finiteOrNull(project.current) ?? finiteOrNull(project.total) ?? 0
+				const allTimeDownloads = finiteOrNull(project.allTime) ?? finiteOrNull(project.total) ?? 0
 				rows.push({
-					id: `curseforge:${project.id ?? project.name}`,
+					id: `curseforge:${sourceId}`,
+					sourceId,
 					name: project.name ?? String(project.id ?? 'CurseForge project'),
 					icon: project.icon ?? null,
 					provider: 'CurseForge',
 					className: 'curseforge',
 					periodValue,
-					allTimeDownloads: finiteOrNull(project.allTime) ?? finiteOrNull(project.total) ?? 0,
+					allTimeDownloads,
 					uniqueDownloads: finiteOrNull(project.unique),
+					parts: [{ provider: 'CurseForge', className: 'curseforge', periodValue, allTimeDownloads }],
 				})
 			}
 		} else {
 			for (const [name, value] of buildCurseForgeEarningsByProject()) {
 				rows.push({
 					id: `curseforge:${name}`,
+					sourceId: name,
 					name,
 					icon: null,
 					provider: 'CurseForge',
 					className: 'curseforge',
 					periodValue: value,
 					allTimeDownloads: 0,
+					parts: [{ provider: 'CurseForge', className: 'curseforge', periodValue: value, allTimeDownloads: 0 }],
 				})
 			}
 		}
 	}
-
-	return rows.sort((a, b) => b.periodValue - a.periodValue)
+	return rows
 })
 
-const maxProjectValue = computed(() => Math.max(...projectRows.value.map((row) => row.periodValue), 1))
+function dominantPart(parts) {
+	if (!parts?.length) return null
+	const periodTotal = parts.reduce((sum, part) => sum + Math.max(0, finiteOrNull(part.periodValue) ?? 0), 0)
+	const field = periodTotal > 0 ? 'periodValue' : 'allTimeDownloads'
+	return [...parts].sort((a, b) => (finiteOrNull(b[field]) ?? 0) - (finiteOrNull(a[field]) ?? 0))[0]
+}
+
+function syncRows(rows) {
+	if (!syncProjects.value || sourceMode.value !== 'combined' || metricMode.value !== 'downloads') return rows
+	const modrinth = new Map(rows.filter((row) => row.provider === 'Modrinth').map((row) => [row.sourceId, row]))
+	const curseforge = new Map(rows.filter((row) => row.provider === 'CurseForge').map((row) => [row.sourceId, row]))
+	const consumed = new Set()
+	const synced = []
+	for (const link of creatorProjectLinks.value) {
+		const mr = modrinth.get(normalizeId(link.modrinth))
+		const cf = curseforge.get(normalizeId(link.curseforge))
+		if (!mr || !cf) continue
+		consumed.add(mr.id)
+		consumed.add(cf.id)
+		const parts = [mr.parts[0], cf.parts[0]]
+		const dominant = dominantPart(parts) ?? mr.parts[0]
+		synced.push({
+			id: `sync:${link.id}`,
+			sourceId: normalizeId(link.id),
+			name: mr.name || cf.name,
+			icon: mr.icon || cf.icon,
+			provider: 'Sync',
+			className: dominant.className,
+			periodValue: mr.periodValue + cf.periodValue,
+			allTimeDownloads: mr.allTimeDownloads + cf.allTimeDownloads,
+			parts,
+			sync: true,
+		})
+	}
+	return [...synced, ...rows.filter((row) => !consumed.has(row.id))]
+}
+
+function sortProjectRows(rows) {
+	const result = [...rows]
+	const byName = (a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' })
+	if (projectSort.value === 'name') return result.sort(byName)
+	if (projectSort.value === 'period') return result.sort((a, b) => b.periodValue - a.periodValue || byName(a, b))
+	if (projectSort.value === 'alltime') return result.sort((a, b) => b.allTimeDownloads - a.allTimeDownloads || byName(a, b))
+	const rank = { Sync: 0, Modrinth: 1, CurseForge: 2 }
+	return result.sort((a, b) => (rank[a.provider] ?? 99) - (rank[b.provider] ?? 99) || b.periodValue - a.periodValue || byName(a, b))
+}
+
+const projectRows = computed(() => sortProjectRows(syncRows(rawProjectRows.value)))
+
+function projectBarSegments(row) {
+	const parts = row.parts?.length ? row.parts : []
+	if (parts.length === 0) return []
+	if (parts.length === 1) return [{ ...parts[0], share: 100 }]
+	const periodTotal = parts.reduce((sum, part) => sum + Math.max(0, finiteOrNull(part.periodValue) ?? 0), 0)
+	const field = periodTotal > 0 ? 'periodValue' : 'allTimeDownloads'
+	const total = parts.reduce((sum, part) => sum + Math.max(0, finiteOrNull(part[field]) ?? 0), 0)
+	if (total <= 0) return parts.map((part) => ({ ...part, share: 100 / parts.length }))
+	return parts.map((part) => ({
+		...part,
+		share: (Math.max(0, finiteOrNull(part[field]) ?? 0) / total) * 100,
+	}))
+}
 
 const summaryCards = computed(() => {
 	if (metricMode.value === 'downloads') {
@@ -491,7 +558,7 @@ const summaryCards = computed(() => {
 				label: 'Projects',
 				value: formatNumber(projectRows.value.length),
 				icon: PackageIcon,
-				subtitle: 'Publications included in this view',
+				subtitle: syncProjects.value && sourceMode.value === 'combined' ? 'Linked publications are counted once' : 'Publications included in this view',
 			},
 			{
 				label: 'Sources included',
@@ -502,7 +569,6 @@ const summaryCards = computed(() => {
 		)
 		return cards
 	}
-
 	const pending = modrinthIncluded.value && payoutBalance.value ? Number(payoutBalance.value.pending) || 0 : null
 	return [
 		{
@@ -510,21 +576,19 @@ const summaryCards = computed(() => {
 			value: formatMoney(currentRevenue.value),
 			icon: CurrencyIcon,
 			change: revenueChange.value,
-			subtitle:
-				curseForgeMoneyIncluded.value
-					? `CurseForge: ${formatPoints(curseForgeCurrentPoints.value)} points × $${CURSEFORGE_USD_PER_POINT.toFixed(2)}`
-					: 'Provider-reported creator earnings',
+			subtitle: curseForgeMoneyIncluded.value
+				? `CurseForge: ${formatPoints(curseForgeCurrentPoints.value)} points × $${CURSEFORGE_USD_PER_POINT.toFixed(2)}`
+				: 'Provider-reported creator earnings',
 		},
 		{
 			label: 'Available balance',
 			value: availableBalance.value == null ? '—' : formatMoney(availableBalance.value),
 			icon: CurrencyIcon,
-			subtitle:
-				curseForgeRewardPoints.value != null
-					? `CurseForge balance: ${formatPoints(curseForgeRewardPoints.value)} points = ${formatMoney(curseForgeRewardBalanceUsd.value)}`
-					: pending != null
-						? `${formatMoney(pending)} pending on Modrinth`
-						: 'No provider balance available',
+			subtitle: curseForgeRewardPoints.value != null
+				? `CurseForge balance: ${formatPoints(curseForgeRewardPoints.value)} points = ${formatMoney(curseForgeRewardBalanceUsd.value)}`
+				: pending != null
+					? `${formatMoney(pending)} pending on Modrinth`
+					: 'No provider balance available',
 		},
 		{
 			label: `Paid · ${periodDays.value}d`,
@@ -547,11 +611,9 @@ const hasVisibleData = computed(() => {
 	}
 	return modrinthIncluded.value || curseForgeMoneyIncluded.value
 })
-
 const needsCurseForgePortalLogin = computed(() =>
 	curseForgeSelectable.value && (!curseForgeAnalytics.value?.connected || curseForgeAnalytics.value?.needsLogin),
 )
-
 const pageNotice = computed(() => {
 	if (errorMessage.value && sourceMode.value !== 'curseforge') return errorMessage.value
 	if (curseForgeErrorMessage.value && sourceMode.value !== 'modrinth') return curseForgeErrorMessage.value
@@ -560,9 +622,7 @@ const pageNotice = computed(() => {
 			? 'CurseForge publishing is connected, but private creator analytics uses your CurseForge Authors browser session. Open the Author Dashboard, sign in there once, then refresh analytics.'
 			: 'CurseForge creator analytics uses a CurseForge Authors browser session. Open the Author Dashboard and sign in; the publishing API token is a separate credential.'
 	}
-	if (!modrinthCredentials.value && sourceMode.value === 'modrinth') {
-		return 'Sign into Modrinth to load creator analytics for your projects.'
-	}
+	if (!modrinthCredentials.value && sourceMode.value === 'modrinth') return 'Sign into Modrinth to load creator analytics for your projects.'
 	if (sourceMode.value === 'combined' && includedProviderCount.value < 2) {
 		return 'Combined is showing every provider with compatible data currently available. Missing provider values stay excluded instead of being estimated.'
 	}
@@ -589,15 +649,9 @@ const providerRows = computed(() => {
 			provider: 'CurseForge',
 			className: 'curseforge',
 			included: curseForgeIncluded.value,
-			projects:
-				metricMode.value === 'downloads'
-					? curseForgeDownloads.value?.projects?.length ?? 0
-					: buildCurseForgeEarningsByProject().size,
+			projects: metricMode.value === 'downloads' ? curseForgeDownloads.value?.projects?.length ?? 0 : buildCurseForgeEarningsByProject().size,
 			value: metricMode.value === 'downloads' ? curseForgeCurrentDownloads.value : curseForgeCurrentRevenue.value,
-			detail:
-				metricMode.value === 'monetization' && curseForgeIncluded.value
-					? `${formatPoints(curseForgeCurrentPoints.value)} points`
-					: null,
+			detail: metricMode.value === 'monetization' && curseForgeIncluded.value ? `${formatPoints(curseForgeCurrentPoints.value)} points` : null,
 		})
 	}
 	return rows
@@ -615,8 +669,7 @@ function trendClass(change) {
 
 function trendLabel(change) {
 	if (change == null) return null
-	const sign = change > 0 ? '+' : ''
-	return `${sign}${change.toFixed(1)}%`
+	return `${change > 0 ? '+' : ''}${change.toFixed(1)}%`
 }
 
 async function refreshModrinthAnalytics() {
@@ -628,7 +681,6 @@ async function refreshModrinthAnalytics() {
 		payoutHistory.value = []
 		return
 	}
-
 	modrinthProjects.value = await get_user_projects(modrinthCredentials.value.user_id)
 	const projectIds = modrinthProjects.value.map((project) => project.id).filter(Boolean)
 	if (projectIds.length === 0) {
@@ -637,7 +689,6 @@ async function refreshModrinthAnalytics() {
 		payoutHistory.value = []
 		return
 	}
-
 	const end = new Date()
 	const start = new Date(end.getTime() - periodDays.value * 2 * DAY_MS)
 	const request = {
@@ -652,16 +703,13 @@ async function refreshModrinthAnalytics() {
 			project_revenue: { bucket_by: ['project_id'] },
 		},
 	}
-
 	const [analyticsResult, payoutResult, historyResult] = await Promise.allSettled([
 		client.labrinth.analytics_v3.fetch(request),
 		client.labrinth.payout_v3.getBalance(),
 		client.labrinth.payout_v3.getHistory(),
 	])
-
-	if (analyticsResult.status === 'fulfilled') {
-		analyticsResponse.value = analyticsResult.value
-	} else {
+	if (analyticsResult.status === 'fulfilled') analyticsResponse.value = analyticsResult.value
+	else {
 		analyticsResponse.value = null
 		throw analyticsResult.reason
 	}
@@ -676,10 +724,9 @@ async function refreshCurseForgeAnalytics() {
 	} catch (error) {
 		console.error('Failed to load CurseForge creator analytics', error)
 		curseForgeAnalytics.value = null
-		curseForgeErrorMessage.value =
-			error instanceof Error
-				? `Could not load CurseForge analytics: ${error.message}`
-				: `Could not load CurseForge analytics: ${String(error)}`
+		curseForgeErrorMessage.value = error instanceof Error
+			? `Could not load CurseForge analytics: ${error.message}`
+			: `Could not load CurseForge analytics: ${String(error)}`
 	}
 }
 
@@ -689,15 +736,12 @@ async function refreshAnalytics() {
 	try {
 		const jobs = []
 		if (sourceMode.value !== 'curseforge') {
-			jobs.push(
-				refreshModrinthAnalytics().catch((error) => {
-					console.error('Failed to load Modrinth analytics', error)
-					errorMessage.value =
-						error instanceof Error
-							? `Could not load Modrinth analytics: ${error.message}`
-							: 'Could not load Modrinth analytics.'
-				}),
-			)
+			jobs.push(refreshModrinthAnalytics().catch((error) => {
+				console.error('Failed to load Modrinth analytics', error)
+				errorMessage.value = error instanceof Error
+					? `Could not load Modrinth analytics: ${error.message}`
+					: 'Could not load Modrinth analytics.'
+			}))
 		}
 		if (sourceMode.value !== 'modrinth') jobs.push(refreshCurseForgeAnalytics())
 		await Promise.all(jobs)
@@ -711,8 +755,7 @@ async function connectCurseForgeAnalytics() {
 	try {
 		await openCurseForgeAuthorPortal()
 	} catch (error) {
-		curseForgeErrorMessage.value =
-			error instanceof Error ? error.message : `Could not open CurseForge Authors: ${String(error)}`
+		curseForgeErrorMessage.value = error instanceof Error ? error.message : `Could not open CurseForge Authors: ${String(error)}`
 	} finally {
 		openingCurseForgePortal.value = false
 	}
@@ -723,16 +766,25 @@ function updateCurseForgeState() {
 	curseForgeProfile.value = getCurseForgeProfile()
 }
 
+function updateCreatorProjectLinks() {
+	creatorProjectLinks.value = getCreatorProjectLinks()
+}
+
 watch(periodDays, () => void refreshAnalytics())
 watch(sourceMode, () => void refreshAnalytics())
+watch(metricMode, () => {
+	if (metricMode.value !== 'downloads' && projectSort.value === 'alltime') projectSort.value = 'period'
+})
 
 onMounted(() => {
 	window.addEventListener(CURSEFORGE_AUTH_CHANGED_EVENT, updateCurseForgeState)
+	window.addEventListener(CREATOR_PROJECT_LINKS_CHANGED_EVENT, updateCreatorProjectLinks)
 	void refreshAnalytics()
 })
 
 onBeforeUnmount(() => {
 	window.removeEventListener(CURSEFORGE_AUTH_CHANGED_EVENT, updateCurseForgeState)
+	window.removeEventListener(CREATOR_PROJECT_LINKS_CHANGED_EVENT, updateCreatorProjectLinks)
 })
 </script>
 
@@ -742,16 +794,9 @@ onBeforeUnmount(() => {
 			<div class="flex flex-wrap items-start justify-between gap-4">
 				<div>
 					<h1 class="m-0 text-2xl font-semibold text-contrast md:text-3xl">Analytics</h1>
-					<p class="mb-0 mt-1 max-w-3xl text-secondary">
-						Unified creator analytics across Modrinth and CurseForge, while preserving provider-native metric semantics.
-					</p>
+					<p class="mb-0 mt-1 max-w-3xl text-secondary">Unified creator analytics across Modrinth and CurseForge, while preserving provider-native metric semantics.</p>
 				</div>
-				<button
-					type="button"
-					class="flex h-10 items-center gap-2 rounded-xl border border-solid border-surface-5 bg-surface-3 px-4 font-medium text-primary transition-colors hover:bg-surface-4 disabled:opacity-60"
-					:disabled="loading"
-					@click="refreshAnalytics"
-				>
+				<button type="button" class="flex h-10 items-center gap-2 rounded-xl border border-solid border-surface-5 bg-surface-3 px-4 font-medium text-primary transition-colors hover:bg-surface-4 disabled:opacity-60" :disabled="loading" @click="refreshAnalytics">
 					<RefreshCwIcon class="size-4" :class="{ 'animate-spin': loading }" />
 					Refresh
 				</button>
@@ -759,83 +804,39 @@ onBeforeUnmount(() => {
 
 			<div class="flex flex-col gap-3 rounded-2xl border border-solid border-surface-5 bg-surface-3 p-3">
 				<div class="flex flex-wrap items-center gap-2">
-					<button
-						v-for="tab in sourceTabs"
-						:key="tab.id"
-						type="button"
-						class="rounded-xl border border-solid px-4 py-2 font-medium transition-colors"
-						:class="
-							sourceMode === tab.id
-								? 'border-brand bg-brand-highlight text-contrast'
-								: 'border-transparent bg-transparent text-primary hover:bg-surface-4'
-						"
-						@click="sourceMode = tab.id"
-					>
+					<button v-for="tab in sourceTabs" :key="tab.id" type="button" class="rounded-xl border border-solid px-4 py-2 font-medium transition-colors" :class="sourceMode === tab.id ? 'border-brand bg-brand-highlight text-contrast' : 'border-transparent bg-transparent text-primary hover:bg-surface-4'" @click="sourceMode = tab.id">
 						{{ tab.label }}
 					</button>
 				</div>
-
 				<div class="flex flex-wrap items-center justify-between gap-3 border-0 border-t border-solid border-surface-4 pt-3">
 					<div class="flex flex-wrap items-center gap-2">
-						<button
-							v-for="tab in metricTabs"
-							:key="tab.id"
-							type="button"
-							class="flex items-center gap-2 rounded-xl px-3 py-2 font-medium transition-colors"
-							:class="metricMode === tab.id ? 'bg-surface-5 text-contrast' : 'text-primary hover:bg-surface-4'"
-							@click="metricMode = tab.id"
-						>
+						<button v-for="tab in metricTabs" :key="tab.id" type="button" class="flex items-center gap-2 rounded-xl px-3 py-2 font-medium transition-colors" :class="metricMode === tab.id ? 'bg-surface-5 text-contrast' : 'text-primary hover:bg-surface-4'" @click="metricMode = tab.id">
 							<component :is="tab.icon" class="size-4" />
 							{{ tab.label }}
 						</button>
 					</div>
 					<div class="flex flex-wrap items-center gap-2">
 						<div class="flex rounded-xl bg-surface-2 p-1">
-							<button
-								v-for="tab in viewTabs"
-								:key="tab.id"
-								type="button"
-								class="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
-								:class="viewMode === tab.id ? 'bg-surface-4 text-contrast' : 'text-secondary hover:text-primary'"
-								@click="viewMode = tab.id"
-							>
+							<button v-for="tab in viewTabs" :key="tab.id" type="button" class="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors" :class="viewMode === tab.id ? 'bg-surface-4 text-contrast' : 'text-secondary hover:text-primary'" @click="viewMode = tab.id">
 								{{ tab.label }}
 							</button>
 						</div>
-						<select
-							v-model.number="periodDays"
-							class="h-9 rounded-xl border border-solid border-surface-5 bg-surface-2 px-3 text-sm font-medium text-primary outline-none"
-						>
-							<option v-for="period in periods" :key="period.days" :value="period.days">
-								{{ period.label }}
-							</option>
+						<select v-model.number="periodDays" class="h-9 rounded-xl border border-solid border-surface-5 bg-surface-2 px-3 text-sm font-medium text-primary outline-none">
+							<option v-for="period in periods" :key="period.days" :value="period.days">{{ period.label }}</option>
 						</select>
 					</div>
 				</div>
 			</div>
 
-			<div
-				v-if="pageNotice"
-				class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-solid border-surface-5 bg-surface-2 px-4 py-3 text-sm text-secondary"
-			>
+			<div v-if="pageNotice" class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-solid border-surface-5 bg-surface-2 px-4 py-3 text-sm text-secondary">
 				<span class="min-w-0 flex-1">{{ pageNotice }}</span>
-				<button
-					v-if="needsCurseForgePortalLogin"
-					type="button"
-					class="rounded-lg border border-solid border-[#ff7849]/40 bg-[#ff7849]/10 px-3 py-1.5 font-semibold text-[#ff8c66] transition-colors hover:bg-[#ff7849]/20 disabled:opacity-60"
-					:disabled="openingCurseForgePortal"
-					@click="connectCurseForgeAnalytics"
-				>
+				<button v-if="needsCurseForgePortalLogin" type="button" class="rounded-lg border border-solid border-[#ff7849]/40 bg-[#ff7849]/10 px-3 py-1.5 font-semibold text-[#ff8c66] transition-colors hover:bg-[#ff7849]/20 disabled:opacity-60" :disabled="openingCurseForgePortal" @click="connectCurseForgeAnalytics">
 					{{ openingCurseForgePortal ? 'Opening…' : 'Open Author Dashboard' }}
 				</button>
 			</div>
 
 			<div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-				<div
-					v-for="card in summaryCards"
-					:key="card.label"
-					class="flex min-h-32 flex-col justify-between rounded-2xl border border-solid border-surface-5 bg-surface-3 p-4"
-				>
+				<div v-for="card in summaryCards" :key="card.label" class="flex min-h-32 flex-col justify-between rounded-2xl border border-solid border-surface-5 bg-surface-3 p-4">
 					<div class="flex items-center justify-between gap-3">
 						<span class="font-medium text-primary">{{ card.label }}</span>
 						<component :is="card.icon" class="size-5 text-primary" />
@@ -859,30 +860,16 @@ onBeforeUnmount(() => {
 				<div class="flex flex-wrap items-center justify-between gap-3 border-0 border-b border-solid border-surface-4 px-5 py-4">
 					<div>
 						<h2 class="m-0 text-lg font-semibold text-contrast">{{ chartTitle }}</h2>
-						<p class="mb-0 mt-1 text-xs text-secondary">
-							{{ dateFormatter.format(rangeDates.start) }} — {{ dateFormatter.format(rangeDates.end) }}
-						</p>
+						<p class="mb-0 mt-1 text-xs text-secondary">{{ dateFormatter.format(rangeDates.start) }} — {{ dateFormatter.format(rangeDates.end) }}</p>
 					</div>
 					<div class="flex items-center gap-4 text-xs text-secondary">
-						<span
-							v-if="sourceMode !== 'curseforge'"
-							class="flex items-center gap-2"
-							:class="{ 'opacity-40': !modrinthIncluded }"
-						><i class="provider-dot modrinth"></i>Modrinth</span>
-						<span
-							v-if="sourceMode !== 'modrinth'"
-							class="flex items-center gap-2"
-							:class="{ 'opacity-40': !curseForgeIncluded }"
-						><i class="provider-dot curseforge"></i>CurseForge</span>
+						<span v-if="sourceMode !== 'curseforge'" class="flex items-center gap-2" :class="{ 'opacity-40': !modrinthIncluded }"><i class="provider-dot modrinth"></i>Modrinth</span>
+						<span v-if="sourceMode !== 'modrinth'" class="flex items-center gap-2" :class="{ 'opacity-40': !curseForgeIncluded }"><i class="provider-dot curseforge"></i>CurseForge</span>
 					</div>
 				</div>
-
 				<div class="relative h-[300px] p-5">
 					<div v-if="loading" class="absolute inset-0 z-10 flex items-center justify-center bg-surface-3/70 backdrop-blur-sm">
-						<div class="flex items-center gap-2 font-medium text-primary">
-							<RefreshCwIcon class="size-5 animate-spin" />
-							Fetching analytics…
-						</div>
+						<div class="flex items-center gap-2 font-medium text-primary"><RefreshCwIcon class="size-5 animate-spin" />Fetching analytics…</div>
 					</div>
 					<div v-if="!hasVisibleData || !chartPoints" class="flex h-full items-center justify-center text-center">
 						<div class="max-w-md">
@@ -899,7 +886,7 @@ onBeforeUnmount(() => {
 						</div>
 						<div class="relative overflow-hidden rounded-lg">
 							<div class="chart-grid absolute inset-0"></div>
-							<svg class="absolute inset-0 h-full w-full overflow-visible text-brand" viewBox="0 0 760 220" preserveAspectRatio="none" aria-hidden="true">
+							<svg class="absolute inset-0 h-full w-full overflow-visible" :class="chartColorClass" viewBox="0 0 760 220" preserveAspectRatio="none" aria-hidden="true">
 								<polygon :points="chartAreaPoints" fill="currentColor" opacity="0.08" />
 								<polyline :points="chartPoints" fill="none" stroke="currentColor" stroke-width="3" vector-effect="non-scaling-stroke" />
 							</svg>
@@ -923,9 +910,7 @@ onBeforeUnmount(() => {
 						<i class="provider-dot size-lg" :class="row.className"></i>
 						<div class="min-w-0 flex-1">
 							<div class="font-semibold text-contrast">{{ row.provider }}</div>
-							<div class="mt-0.5 text-xs text-secondary">
-								{{ row.included ? `${row.projects} project${row.projects === 1 ? '' : 's'} represented` : 'Provider analytics unavailable for this metric' }}
-							</div>
+							<div class="mt-0.5 text-xs text-secondary">{{ row.included ? `${row.projects} project${row.projects === 1 ? '' : 's'} represented` : 'Provider analytics unavailable for this metric' }}</div>
 						</div>
 						<div class="text-right">
 							<div class="font-semibold" :class="row.included ? 'text-contrast' : 'text-secondary'">{{ providerValue(row) }}</div>
@@ -937,9 +922,20 @@ onBeforeUnmount(() => {
 			</section>
 
 			<section v-else class="overflow-hidden rounded-2xl border border-solid border-surface-5 bg-surface-3">
-				<div class="border-0 border-b border-solid border-surface-4 px-5 py-4">
-					<h2 class="m-0 text-lg font-semibold text-contrast">Project comparison</h2>
-					<p class="mb-0 mt-1 text-sm text-secondary">Individual publications stay separate by provider instead of being silently deduplicated.</p>
+				<div class="flex flex-wrap items-center justify-between gap-3 border-0 border-b border-solid border-surface-4 px-5 py-4">
+					<div>
+						<h2 class="m-0 text-lg font-semibold text-contrast">Project comparison</h2>
+						<p class="mb-0 mt-1 text-sm text-secondary">{{ syncProjects && sourceMode === 'combined' && metricMode === 'downloads' ? 'Linked Modrinth and CurseForge publications are shown as one synchronized project.' : 'Individual publications stay separate by provider.' }}</p>
+					</div>
+					<div class="flex flex-wrap items-center gap-2">
+						<label class="inline-flex h-9 cursor-pointer items-center gap-2 rounded-xl border border-solid border-surface-5 bg-surface-2 px-3 text-sm font-medium text-primary">
+							<input v-model="syncProjects" type="checkbox" class="size-4 accent-brand" :disabled="sourceMode !== 'combined' || metricMode !== 'downloads'" />
+							Sync
+						</label>
+						<select v-model="projectSort" class="h-9 rounded-xl border border-solid border-surface-5 bg-surface-2 px-3 text-sm font-medium text-primary outline-none">
+							<option v-for="option in projectSortOptions" :key="option.id" :value="option.id">Sort: {{ option.label }}</option>
+						</select>
+					</div>
 				</div>
 				<div v-if="projectRows.length === 0" class="p-8 text-center text-sm text-secondary">No comparable project data is available for this source.</div>
 				<div v-else class="overflow-x-auto">
@@ -960,12 +956,8 @@ onBeforeUnmount(() => {
 										<div v-else class="flex size-9 items-center justify-center rounded-lg bg-surface-4"><PackageIcon class="size-4 text-secondary" /></div>
 										<div class="min-w-0 flex-1">
 											<div class="truncate font-medium text-contrast">{{ row.name }}</div>
-											<div class="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-4">
-												<div
-													class="h-full rounded-full"
-													:class="row.className === 'curseforge' ? 'bg-[#ff7849]' : 'bg-brand'"
-													:style="{ width: `${Math.max(2, (row.periodValue / maxProjectValue) * 100)}%` }"
-												></div>
+											<div class="mt-1 flex h-1.5 overflow-hidden rounded-full bg-surface-4">
+												<div v-for="segment in projectBarSegments(row)" :key="segment.provider" class="h-full first:rounded-l-full last:rounded-r-full" :class="segment.className === 'curseforge' ? 'bg-[#ff7849]' : 'bg-brand'" :style="{ width: `${segment.share}%` }" :title="`${segment.provider}: ${metricMode === 'downloads' ? formatNumber(segment.periodValue) : formatMoney(segment.periodValue)} (${segment.share.toFixed(1)}%)`"></div>
 											</div>
 										</div>
 									</div>
@@ -994,6 +986,10 @@ onBeforeUnmount(() => {
 		linear-gradient(to bottom, var(--color-surface-4) 1px, transparent 1px),
 		linear-gradient(to right, color-mix(in srgb, var(--color-surface-4) 55%, transparent) 1px, transparent 1px);
 	background-size: 100% 50%, 12.5% 100%;
+}
+
+.text-curseforge {
+	color: #ff7849;
 }
 
 .provider-dot {
