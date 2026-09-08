@@ -22,6 +22,7 @@ import {
 import {
 	CREATOR_ANALYTICS_CACHE_UPDATED_EVENT,
 	getCreatorAnalyticsSnapshot,
+	isCreatorAnalyticsPeriodComplete,
 	refreshCreatorAnalyticsPeriod,
 } from '@/helpers/creator-analytics-cache.js'
 import {
@@ -39,6 +40,7 @@ const projectSort = ref('provider')
 const syncProjects = ref(true)
 const creatorProjectLinks = ref(getCreatorProjectLinks())
 const loading = ref(false)
+const backgroundLoadingPeriod = ref(null)
 const openingCurseForgePortal = ref(false)
 const errorMessage = ref('')
 const curseForgeErrorMessage = ref('')
@@ -372,12 +374,28 @@ const currentSeries = computed(() => {
 	if (sourceMode.value === 'curseforge') return curseForgeCurrentSeries.value
 	return mergeSeries(modrinthCurrentSeries.value, curseForgeCurrentSeries.value)
 })
-const chartPoints = computed(() => {
+const chartSeries = computed(() => {
+	if (metricMode.value === 'downloads' && sourceMode.value === 'combined') {
+		return [
+			{ id: 'modrinth', values: modrinthCurrentSeries.value, color: 'var(--color-brand, #1bd96a)', areaOpacity: 0.07 },
+			{ id: 'curseforge', values: curseForgeCurrentSeries.value, color: '#ff7849', areaOpacity: 0.045 },
+		].filter((series) => series.values.length > 0)
+	}
 	const values = currentSeries.value
-	if (values.length === 0) return ''
+	if (values.length === 0) return []
+	return [{
+		id: sourceMode.value,
+		values,
+		color: sourceMode.value === 'curseforge' ? '#ff7849' : 'var(--color-brand, #1bd96a)',
+		areaOpacity: 0.08,
+	}]
+})
+const chartMax = computed(() => Math.max(0, ...chartSeries.value.flatMap((series) => series.values)))
+function makeChartPoints(values) {
+	if (!values.length) return ''
 	const width = 760
 	const height = 220
-	const max = Math.max(...values, 1)
+	const max = Math.max(chartMax.value, 1)
 	return values
 		.map((value, index) => {
 			const x = values.length === 1 ? width / 2 : (index / (values.length - 1)) * width
@@ -385,13 +403,18 @@ const chartPoints = computed(() => {
 			return `${x.toFixed(1)},${y.toFixed(1)}`
 		})
 		.join(' ')
-})
-const chartAreaPoints = computed(() => chartPoints.value ? `0,220 ${chartPoints.value} 760,220` : '')
-const chartMax = computed(() => Math.max(...currentSeries.value, 0))
+}
+const chartLines = computed(() => chartSeries.value.map((series) => {
+	const points = makeChartPoints(series.values)
+	return {
+		...series,
+		points,
+		areaPoints: points ? `0,220 ${points} 760,220` : '',
+	}
+}))
 const chartTitle = computed(() =>
 	metricMode.value === 'downloads' ? 'Downloads over time' : 'Creator earnings over time',
 )
-const chartColorClass = computed(() => sourceMode.value === 'curseforge' ? 'text-curseforge' : 'text-brand')
 
 function buildCurseForgeEarningsByProject() {
 	const totals = new Map()
@@ -613,10 +636,12 @@ const hasVisibleData = computed(() => {
 	}
 	return modrinthIncluded.value || curseForgeMoneyIncluded.value
 })
+const selectedPeriodRefreshing = computed(() => Number(backgroundLoadingPeriod.value) === Number(periodDays.value))
 const needsCurseForgePortalLogin = computed(() =>
 	curseForgeSelectable.value && curseForgeCacheKnown.value && (!curseForgeAnalytics.value?.connected || curseForgeAnalytics.value?.needsLogin),
 )
 const pageNotice = computed(() => {
+	if (selectedPeriodRefreshing.value) return `Refreshing ${periodDays.value}-day analytics because this range is missing or incomplete…`
 	if (errorMessage.value && sourceMode.value !== 'curseforge') return errorMessage.value
 	if (curseForgeErrorMessage.value && sourceMode.value !== 'modrinth') return curseForgeErrorMessage.value
 	if (needsCurseForgePortalLogin.value) {
@@ -729,12 +754,17 @@ async function refreshAnalytics() {
 
 function refreshPeriodInBackground() {
 	const requestedPeriod = Number(periodDays.value)
-	void refreshCreatorAnalyticsPeriod(requestedPeriod, { force: false })
+	const incomplete = !isCreatorAnalyticsPeriodComplete(requestedPeriod)
+	if (incomplete) backgroundLoadingPeriod.value = requestedPeriod
+	void refreshCreatorAnalyticsPeriod(requestedPeriod, { force: incomplete })
 		.then((snapshot) => {
 			if (Number(periodDays.value) === requestedPeriod) hydrateCreatorAnalytics(snapshot)
 		})
 		.catch((error) => {
 			if (import.meta.env.DEV) console.debug('[Fodrinth] Cached analytics refresh failed', error)
+		})
+		.finally(() => {
+			if (Number(backgroundLoadingPeriod.value) === requestedPeriod) backgroundLoadingPeriod.value = null
 		})
 }
 
@@ -776,6 +806,7 @@ onMounted(() => {
 	window.addEventListener(CREATOR_PROJECT_LINKS_CHANGED_EVENT, updateCreatorProjectLinks)
 	window.addEventListener(CREATOR_ANALYTICS_CACHE_UPDATED_EVENT, handleCreatorAnalyticsCacheUpdated)
 	hydrateCreatorAnalytics()
+	refreshPeriodInBackground()
 })
 
 onBeforeUnmount(() => {
@@ -865,10 +896,10 @@ onBeforeUnmount(() => {
 					</div>
 				</div>
 				<div class="relative h-[300px] p-5">
-					<div v-if="loading" class="absolute inset-0 z-10 flex items-center justify-center bg-surface-3/70 backdrop-blur-sm">
+					<div v-if="loading || selectedPeriodRefreshing" class="absolute inset-0 z-10 flex items-center justify-center bg-surface-3/70 backdrop-blur-sm">
 						<div class="flex items-center gap-2 font-medium text-primary"><RefreshCwIcon class="size-5 animate-spin" />Fetching analytics…</div>
 					</div>
-					<div v-if="!hasVisibleData || !chartPoints" class="flex h-full items-center justify-center text-center">
+					<div v-if="!hasVisibleData || chartLines.length === 0" class="flex h-full items-center justify-center text-center">
 						<div class="max-w-md">
 							<ChartIcon class="mx-auto size-8 text-secondary" />
 							<h3 class="mb-1 mt-3 text-base font-semibold text-contrast">No chart data available</h3>
@@ -883,9 +914,9 @@ onBeforeUnmount(() => {
 						</div>
 						<div class="relative overflow-hidden rounded-lg">
 							<div class="chart-grid absolute inset-0"></div>
-							<svg class="absolute inset-0 h-full w-full overflow-visible" :class="chartColorClass" viewBox="0 0 760 220" preserveAspectRatio="none" aria-hidden="true">
-								<polygon :points="chartAreaPoints" fill="currentColor" opacity="0.08" />
-								<polyline :points="chartPoints" fill="none" stroke="currentColor" stroke-width="3" vector-effect="non-scaling-stroke" />
+							<svg v-for="line in chartLines" :key="line.id" class="absolute inset-0 h-full w-full overflow-visible" viewBox="0 0 760 220" preserveAspectRatio="none" aria-hidden="true" :style="{ color: line.color }">
+								<polygon :points="line.areaPoints" fill="currentColor" :opacity="line.areaOpacity" />
+								<polyline :points="line.points" fill="none" stroke="currentColor" stroke-width="3" vector-effect="non-scaling-stroke" />
 							</svg>
 						</div>
 						<div></div>
