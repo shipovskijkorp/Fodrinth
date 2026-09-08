@@ -22,11 +22,7 @@ export default new createRouter({
 		{
 			path: '/analytics',
 			name: 'Creator analytics',
-			component: () => import('@/pages/FodrinthCreatorPlaceholder.vue'),
-			props: {
-				title: 'Analytics',
-				description: 'Combined downloads, platform comparisons, and creator analytics will live here.',
-			},
+			component: () => import('@/pages/Analytics.vue'),
 		},
 		{
 			path: '/hosting/manage/',
