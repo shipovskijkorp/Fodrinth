@@ -97,9 +97,8 @@ async function settle(promise) {
 }
 
 export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
-	// These readers now use separate hidden WebViews. Start them together so the legacy
-	// rewards reader can no longer delay downloads/projects by an extra minute before their
-	// work even begins.
+	// Rewards, downloads and projects have independent hidden WebViews/readers. Run them
+	// concurrently so a slow or broken dashboard surface cannot serialize the whole refresh.
 	const [baseResult, freshResult, projectsResult] = await Promise.all([
 		settle(invoke('plugin:utils|curseforge_get_author_analytics', { periodDays })),
 		settle(invoke('plugin:utils|curseforge_get_author_downloads', { periodDays })),
@@ -137,23 +136,17 @@ export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
 	}
 
 	const freshDownloadsHealthy = hasDownloadPayload(freshDownloads) && !freshDownloads?.error
-	const fallbackDownloads = base?.downloads && typeof base.downloads === 'object' ? base.downloads : null
-	const primaryDownloads = freshDownloadsHealthy ? freshDownloads : fallbackDownloads
-	const projectSources = [
-		...(Array.isArray(fallbackDownloads?.projects) ? fallbackDownloads.projects : []),
-		...(Array.isArray(freshDownloads?.projects) ? freshDownloads.projects : []),
-	]
-	const projects = mergeDownloadProjects(projectSources, authorProjects)
+	const primaryDownloads = freshDownloadsHealthy ? freshDownloads : null
+	const projects = mergeDownloadProjects(
+		Array.isArray(freshDownloads?.projects) ? freshDownloads.projects : [],
+		authorProjects,
+	)
 	const projectAllTimeValues = projects.map((project) => finiteOrNull(project.allTime)).filter((value) => value != null)
 	const projectAllTime = projectAllTimeValues.length
 		? projectAllTimeValues.reduce((total, value) => total + value, 0)
 		: null
 
-	const series = Array.isArray(freshDownloads?.series) && freshDownloads.series.length
-		? freshDownloads.series
-		: Array.isArray(fallbackDownloads?.series)
-			? fallbackDownloads.series
-			: []
+	const series = Array.isArray(freshDownloads?.series) ? freshDownloads.series : []
 
 	const downloads = {
 		current: optionalNumber(primaryDownloads?.current),
@@ -165,19 +158,11 @@ export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
 		yesterdayChangePercent: optionalNumber(primaryDownloads?.yesterdayChangePercent),
 		series,
 		projects,
-		debug: freshDownloads?.debug ?? fallbackDownloads?.debug ?? null,
+		debug: freshDownloads?.debug ?? null,
 	}
 
 	if (freshDownloads?.error) {
 		downloadsError = downloadsError ? `${downloadsError}; ${String(freshDownloads.error)}` : String(freshDownloads.error)
-	}
-	// The legacy combined reader still uses the old callback transport for its dashboard
-	// fallback. Do not let that obsolete fallback poison a healthy dedicated result.
-	if (!freshDownloadsHealthy) {
-		for (const error of [fallbackDownloads?.error, base?.downloadsError]) {
-			if (!error) continue
-			downloadsError = downloadsError ? `${downloadsError}; ${String(error)}` : String(error)
-		}
 	}
 
 	const hasDownloads = hasDownloadPayload(downloads)
