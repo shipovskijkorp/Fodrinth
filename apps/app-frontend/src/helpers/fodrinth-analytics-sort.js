@@ -1,3 +1,4 @@
+import { CREATOR_ANALYTICS_CACHE_UPDATED_EVENT } from '@/helpers/creator-analytics-cache.js'
 import router from '@/routes'
 
 const SORT_BY_COLUMN = ['name', 'provider', 'period', 'alltime']
@@ -10,6 +11,7 @@ let activeSort = 'provider'
 let sortDirection = 'asc'
 let initializedSort = false
 let suppressSelectSync = false
+let restoring = false
 
 const numberParts = new Intl.NumberFormat().formatToParts(12345.6)
 const numberGroup = numberParts.find((part) => part.type === 'group')?.value ?? ''
@@ -56,6 +58,10 @@ function projectName(row) {
 	return row.cells?.[0]?.textContent?.trim() ?? ''
 }
 
+function periodValue(row) {
+	return parseDisplayedNumber(row.cells?.[2]?.textContent) ?? 0
+}
+
 function compareRows(left, right, sortId, direction) {
 	const columnIndex = SORT_BY_COLUMN.indexOf(sortId)
 	if (columnIndex < 0) return 0
@@ -73,9 +79,8 @@ function compareRows(left, right, sortId, direction) {
 	} else if (sortId === 'provider') {
 		const leftRank = PROVIDER_RANK[leftText] ?? 99
 		const rightRank = PROVIDER_RANK[rightText] ?? 99
-		result = leftRank !== rightRank
-			? (leftRank - rightRank) * directionFactor
-			: leftText.localeCompare(rightText, undefined, { sensitivity: 'base' }) * directionFactor
+		if (leftRank !== rightRank) result = (leftRank - rightRank) * directionFactor
+		else result = periodValue(right) - periodValue(left)
 	} else {
 		result = leftText.localeCompare(rightText, undefined, { sensitivity: 'base' }) * directionFactor
 	}
@@ -84,8 +89,8 @@ function compareRows(left, right, sortId, direction) {
 	return projectName(left).localeCompare(projectName(right), undefined, { sensitivity: 'base' })
 }
 
-function sortRows(section) {
-	const tbody = section.querySelector('table tbody')
+function sortRows(section, sortId = activeSort, direction = sortDirection) {
+	const tbody = section?.querySelector('table tbody')
 	if (!tbody) return
 	const rows = [...tbody.querySelectorAll(':scope > tr')]
 	if (rows.length < 2) return
@@ -93,7 +98,7 @@ function sortRows(section) {
 	const sorted = rows
 		.map((row, index) => ({ row, index }))
 		.sort((left, right) =>
-			compareRows(left.row, right.row, activeSort, sortDirection) || left.index - right.index,
+			compareRows(left.row, right.row, sortId, direction) || left.index - right.index,
 		)
 		.map((entry) => entry.row)
 
@@ -101,6 +106,22 @@ function sortRows(section) {
 	const fragment = document.createDocumentFragment()
 	for (const row of sorted) fragment.appendChild(row)
 	tbody.appendChild(fragment)
+}
+
+function restoreVueOrder() {
+	if (restoring || !isAnalyticsRoute()) return
+	const section = findComparisonSection()
+	if (!section) return
+	restoring = true
+	try {
+		// Analytics.vue owns the table and always renders the selected field in its canonical
+		// direction (text ascending, numbers descending, provider ascending). Put the DOM back
+		// in exactly that order before Vue reacts to a source/period/cache change. This avoids
+		// externally reordered keyed <tr> nodes confusing Vue's patcher on the next render.
+		sortRows(section, activeSort, defaultDirection(activeSort))
+	} finally {
+		restoring = false
+	}
 }
 
 function ensureStyles() {
@@ -138,6 +159,7 @@ function ensureStyles() {
 }
 
 function activateSort(sortId, select) {
+	restoreVueOrder()
 	if (activeSort === sortId) {
 		sortDirection = sortDirection === 'asc' ? 'desc' : 'asc'
 	} else {
@@ -226,7 +248,7 @@ function patch() {
 	}
 
 	updateHeaders(section, select)
-	sortRows(section)
+	if (sortDirection !== defaultDirection(activeSort)) sortRows(section)
 }
 
 function schedulePatch() {
@@ -235,11 +257,30 @@ function schedulePatch() {
 	requestAnimationFrame(patch)
 }
 
+function beforeUiMutation(event) {
+	if (!isAnalyticsRoute()) return
+	if (event?.target?.closest?.('.fodrinth-sortable-header')) return
+	restoreVueOrder()
+	requestAnimationFrame(schedulePatch)
+}
+
+function beforeCacheMutation() {
+	restoreVueOrder()
+	schedulePatch()
+}
+
 export function initFodrinthAnalyticsSort() {
 	if (observer) return
 	ensureStyles()
 	observer = new MutationObserver(schedulePatch)
 	observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+	document.addEventListener('click', beforeUiMutation, true)
+	document.addEventListener('change', beforeUiMutation, true)
+	window.addEventListener(CREATOR_ANALYTICS_CACHE_UPDATED_EVENT, beforeCacheMutation)
+	router.beforeEach(() => {
+		restoreVueOrder()
+		return true
+	})
 	router.afterEach(() => schedulePatch())
 	schedulePatch()
 }
