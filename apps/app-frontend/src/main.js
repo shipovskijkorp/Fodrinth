@@ -11,6 +11,7 @@ import '@/assets/fodrinth-projects.css'
 import { overlayScrollbarsDirective } from '@/directives/overlayScrollbars'
 import { startCreatorAnalyticsBackground } from '@/helpers/creator-analytics-cache.js'
 import { setupErrorReporting } from '@/helpers/error-reporting'
+import { initFodrinthAnalyticsProviderChart } from '@/helpers/fodrinth-analytics-provider-chart'
 import { initFodrinthAnalyticsSort } from '@/helpers/fodrinth-analytics-sort'
 import { initFodrinthNavbar } from '@/helpers/fodrinth-navbar'
 import { initFodrinthProjectLayout } from '@/helpers/fodrinth-project-layout'
@@ -50,6 +51,7 @@ async function mount() {
 	initFodrinthNavbar()
 	initFodrinthProjectLayout()
 	initFodrinthAnalyticsSort()
+	initFodrinthAnalyticsProviderChart()
 	startCreatorAnalyticsBackground()
 }
 
