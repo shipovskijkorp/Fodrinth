@@ -94,7 +94,16 @@ export function unlinkCreatorProjects(linkId) {
 }
 
 export async function getCurseForgeAuthorProjects() {
-	return await invoke('plugin:utils|curseforge_get_author_projects')
+	try {
+		return await invoke('plugin:utils|curseforge_get_author_projects_v2')
+	} catch (error) {
+		// Keep compatibility with an older backend during frontend-only hot reloads. Once the
+		// rebuilt Tauri backend is running, the v2 reader is always preferred because it does
+		// not depend on eval_with_callback on the remote Authors dashboard.
+		const message = error instanceof Error ? error.message : String(error)
+		if (!/command not found|not allowed/i.test(message)) throw error
+		return await invoke('plugin:utils|curseforge_get_author_projects')
+	}
 }
 
 async function readResponse(response, action) {
