@@ -4,6 +4,12 @@ import { getCurseForgeAuthorProjects } from '@/helpers/creator-projects.js'
 
 export const CURSEFORGE_USD_PER_POINT = 0.05
 
+const CURSEFORGE_ANALYTICS_CACHE_MIGRATION = 'fodrinth.creator.analytics-cache.cf-v4-migrated'
+if (localStorage.getItem(CURSEFORGE_ANALYTICS_CACHE_MIGRATION) !== '1') {
+	localStorage.removeItem('fodrinth.creator.analytics-cache.v3')
+	localStorage.setItem(CURSEFORGE_ANALYTICS_CACHE_MIGRATION, '1')
+}
+
 export async function openCurseForgeAuthorPortal() {
 	return await invoke('plugin:utils|curseforge_open_author_portal')
 }
@@ -53,9 +59,6 @@ function findProjectAnalytics(byName, fallbackName) {
 	const exact = byName.get(key)
 	if (exact) return exact
 
-	// The Authors graph can visually truncate long legend labels. textContent is normally
-	// complete, but keep a conservative prefix fallback for dashboard variants that emit the
-	// shortened label into the DOM itself.
 	let best = null
 	let bestLength = 0
 	for (const [candidateKey, project] of byName) {
@@ -145,8 +148,6 @@ async function settle(promise) {
 }
 
 export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
-	// Rewards, downloads and projects have independent hidden WebViews/readers. Run them
-	// concurrently so a slow or broken dashboard surface cannot serialize the whole refresh.
 	const [baseResult, freshResult, projectsResult] = await Promise.all([
 		settle(invoke('plugin:utils|curseforge_get_author_analytics', { periodDays })),
 		settle(invoke('plugin:utils|curseforge_get_author_downloads', { periodDays })),
@@ -216,6 +217,19 @@ export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
 
 	if (freshDownloads?.error) {
 		downloadsError = downloadsError ? `${downloadsError}; ${String(freshDownloads.error)}` : String(freshDownloads.error)
+	}
+
+	const hasSeries = series.length > 0
+	const hasProjectPeriods = projects.some((project) =>
+		finiteOrNull(project?.period) != null || finiteOrNull(project?.current) != null,
+	)
+	if (freshDownloadsHealthy && (!hasSeries || !hasProjectPeriods)) {
+		const missing = [
+			!hasSeries ? 'daily series' : null,
+			!hasProjectPeriods ? 'per-project period downloads' : null,
+		].filter(Boolean).join(' and ')
+		const message = `CurseForge period analytics incomplete: missing ${missing}`
+		downloadsError = downloadsError ? `${downloadsError}; ${message}` : message
 	}
 
 	const hasDownloads = hasDownloadPayload(downloads)
