@@ -126,28 +126,26 @@ function isCurseForgeFresh(provider, periodDays = 30) {
 	const downloads = analytics.downloads
 	if (!downloads || typeof downloads !== 'object') return false
 	const hasNumber = (value) => value != null && value !== '' && Number.isFinite(Number(value))
-	const hasAnyPayload =
-		hasNumber(downloads.current) ||
-		hasNumber(downloads.allTime) ||
-		(downloads.series?.length ?? 0) > 0 ||
-		(downloads.projects?.length ?? 0) > 0
-	if (!hasAnyPayload) return false
+	const projects = Array.isArray(downloads.projects) ? downloads.projects : []
+	const series = Array.isArray(downloads.series) ? downloads.series : []
+	const projectPeriodsComplete = projects.length === 0 || projects.every((project) =>
+		hasNumber(project?.period) || hasNumber(project?.current),
+	)
+	const seriesUsable = series.length >= Math.min(Math.max(1, Number(periodDays) || 30), 5)
 
-	// Unlike 7d/30d, CurseForge has no dedicated 90-day KPI tile. A cached 90d snapshot with
-	// only all-time/project metadata is therefore incomplete: it must contain the selected
-	// 90-day chart series and at least one per-project period total before we stop retrying it.
-	if (Number(periodDays) === 90) {
-		const projects = Array.isArray(downloads.projects) ? downloads.projects : []
-		const hasProjectPeriods = projects.some((project) =>
-			hasNumber(project?.period) || hasNumber(project?.current),
-		)
-		return hasNumber(downloads.current) && (downloads.series?.length ?? 0) > 0 && hasProjectPeriods
-	}
-	return true
+	// A period snapshot is only complete when CurseForge supplied the selected-period total,
+	// a real daily series and a period value for every represented project. This rule applies
+	// to 7d/30d as well as 90d; otherwise switching to a partially cached range would look
+	// "available" and the page would never trigger the missing background refresh.
+	return hasNumber(downloads.current) && seriesUsable && projectPeriodsComplete
 }
 
 function isPeriodFresh(snapshot) {
 	return isProviderFresh(snapshot?.modrinth) && isCurseForgeFresh(snapshot?.curseforge, snapshot?.periodDays)
+}
+
+export function isCreatorAnalyticsPeriodComplete(periodDays = 30) {
+	return isPeriodFresh(getCreatorAnalyticsSnapshot(periodDays))
 }
 
 async function cacheMatchesCurrentModrinthUser(snapshot) {
