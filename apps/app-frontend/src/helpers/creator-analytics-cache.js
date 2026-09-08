@@ -8,8 +8,8 @@ import { get_user_projects } from '@/helpers/users'
 
 export const CREATOR_ANALYTICS_CACHE_UPDATED_EVENT = 'fodrinth:creator-analytics-cache-updated'
 
-const STORAGE_KEY = 'fodrinth.creator.analytics-cache.v1'
-const CACHE_VERSION = 1
+const STORAGE_KEY = 'fodrinth.creator.analytics-cache.v2'
+const CACHE_VERSION = 2
 const DEFAULT_PERIODS = [30, 90, 7]
 const FRESH_FOR_MS = 15 * 60 * 1000
 const PERIODIC_CHECK_MS = 5 * 60 * 1000
@@ -114,9 +114,15 @@ function providerAge(provider) {
 	return Number.isFinite(updatedAt) ? Math.max(0, Date.now() - updatedAt) : Infinity
 }
 
+function isProviderFresh(provider) {
+	return !!provider && providerAge(provider) < FRESH_FOR_MS
+}
+
 function isPeriodFresh(snapshot) {
-	const providers = [snapshot?.modrinth, snapshot?.curseforge].filter(Boolean)
-	return providers.length > 0 && providers.every((provider) => providerAge(provider) < FRESH_FOR_MS)
+	// A period is only complete when both provider states have been resolved. Previously a
+	// fast Modrinth response could mark the whole period fresh while CurseForge was still
+	// loading, which made the UI cache a false "not included" state.
+	return isProviderFresh(snapshot?.modrinth) && isProviderFresh(snapshot?.curseforge)
 }
 
 async function cacheMatchesCurrentModrinthUser(snapshot) {
@@ -270,15 +276,14 @@ function errorMessage(error) {
 	return error instanceof Error ? error.message : String(error)
 }
 
-function persistProviderFailure(periodDays, providerName, error) {
-	const old = getCreatorAnalyticsSnapshot(periodDays)?.[providerName] ?? {}
-	persistPeriod(periodDays, {
-		[providerName]: {
-			...old,
-			lastAttemptAt: Date.now(),
-			error: errorMessage(error),
-		},
-	})
+function failedProvider(previous, error) {
+	return {
+		...(previous ?? {}),
+		// Keep the last successful updatedAt so stale data remains visible but is still retried.
+		updatedAt: Number(previous?.updatedAt) || 0,
+		lastAttemptAt: Date.now(),
+		error: errorMessage(error),
+	}
 }
 
 export async function refreshCreatorAnalyticsPeriod(periodDays = 30, { force = false } = {}) {
@@ -290,27 +295,22 @@ export async function refreshCreatorAnalyticsPeriod(periodDays = 30, { force = f
 	if (!force && isPeriodFresh(cached) && await cacheMatchesCurrentModrinthUser(cached)) return cached
 
 	const promise = (async () => {
-		const modrinthTask = fetchModrinthAnalytics(days)
-			.then((modrinth) => {
-				persistPeriod(days, { modrinth })
-				return modrinth
-			})
-			.catch((error) => {
-				persistProviderFailure(days, 'modrinth', error)
-				throw error
-			})
+		const previous = getCreatorAnalyticsSnapshot(days)
+		const [modrinthResult, curseForgeResult] = await Promise.allSettled([
+			fetchModrinthAnalytics(days),
+			enqueueCurseForge(days),
+		])
 
-		const curseForgeTask = enqueueCurseForge(days)
-			.then((curseforge) => {
-				persistPeriod(days, { curseforge })
-				return curseforge
-			})
-			.catch((error) => {
-				persistProviderFailure(days, 'curseforge', error)
-				throw error
-			})
+		const modrinth = modrinthResult.status === 'fulfilled'
+			? modrinthResult.value
+			: failedProvider(previous.modrinth, modrinthResult.reason)
+		const curseforge = curseForgeResult.status === 'fulfilled'
+			? curseForgeResult.value
+			: failedProvider(previous.curseforge, curseForgeResult.reason)
 
-		await Promise.allSettled([modrinthTask, curseForgeTask])
+		// Commit the period atomically. Analytics.vue never observes a state where only the
+		// fast provider exists while CurseForge is still scraping its hidden Authors webview.
+		persistPeriod(days, { modrinth, curseforge })
 		return getCreatorAnalyticsSnapshot(days)
 	})()
 
@@ -365,11 +365,7 @@ function scheduleStartupWarmup(delay = STARTUP_DELAY_MS) {
 					scheduleStartupWarmup(RETRY_DELAY_MS)
 					return
 				}
-				try {
-					await refreshCreatorAnalyticsPeriod(periodDays, { force: false })
-				} catch (error) {
-					if (import.meta.env.DEV) console.debug(`[Fodrinth] Startup analytics ${periodDays}d refresh failed`, error)
-				}
+				await refreshCreatorAnalyticsPeriod(periodDays, { force: false })
 			}
 		}, 6000)
 	}, delay)
@@ -401,8 +397,8 @@ export function startCreatorAnalyticsBackground() {
 		window.addEventListener(event, noteInteraction, { passive: true })
 	}
 
-	// Warm startup analytics sequentially in the priority order 30d -> 90d -> 7d.
-	// 90d begins immediately after the 30d refresh finishes, without an artificial delay.
+	// Warm startup analytics sequentially in the requested priority order 30d -> 90d -> 7d.
+	// 90d starts as soon as 30d has fully resolved for both providers.
 	scheduleStartupWarmup()
 
 	periodicTimer = window.setInterval(() => {
