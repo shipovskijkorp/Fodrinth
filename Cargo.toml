@@ -202,8 +202,8 @@ strum = "0.27.2"
 syn = { version = "2.0" }
 sysinfo = { version = "0.37.2", default-features = false }
 tar = "0.4.44"
-tauri = "2.8.5"
-tauri-build = "2.4.1"
+tauri = "2.11.0"
+tauri-build = "2.6.0"
 tauri-plugin-deep-link = "2.4.3"
 tauri-plugin-dialog = "2.4.0"
 tauri-plugin-fs = "2.4.5"
