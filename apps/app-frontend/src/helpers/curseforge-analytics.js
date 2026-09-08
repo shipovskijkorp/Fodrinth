@@ -4,7 +4,7 @@ import { getCurseForgeAuthorProjects } from '@/helpers/creator-projects.js'
 
 export const CURSEFORGE_USD_PER_POINT = 0.05
 
-const CURSEFORGE_PROJECT_PERIOD_MIGRATION = 'fodrinth.creator.analytics-cache.cf-project-periods-v1'
+const CURSEFORGE_PROJECT_PERIOD_MIGRATION = 'fodrinth.creator.analytics-cache.cf-project-periods-v2'
 if (localStorage.getItem(CURSEFORGE_PROJECT_PERIOD_MIGRATION) !== '1') {
 	localStorage.removeItem('fodrinth.creator.analytics-cache.v3')
 	localStorage.setItem(CURSEFORGE_PROJECT_PERIOD_MIGRATION, '1')
@@ -141,6 +141,16 @@ function deriveCurrentFromSeries(series, periodDays) {
 	return count >= Math.min(days, 5) ? total : null
 }
 
+function plausiblePeriodTotal(value, allTime) {
+	const number = finiteOrNull(value)
+	if (number == null || number < 0) return null
+	const lifetime = finiteOrNull(allTime)
+	// A period is a subset of cumulative project downloads. Reject scraper candidates that
+	// accidentally summed multiple chart series/containers and became larger than lifetime.
+	if (lifetime != null && number > lifetime + 1) return null
+	return number
+}
+
 function compactKnownProjects(projects) {
 	return (projects ?? []).map((project) => ({
 		id: String(project?.id ?? '').trim(),
@@ -209,14 +219,24 @@ export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
 	const series = Array.isArray(freshDownloads?.series) ? freshDownloads.series : []
 	const derivedCurrent = deriveCurrentFromSeries(series, periodDays)
 	const projectPeriodValues = projects.map((project) => finiteOrNull(project.period ?? project.current)).filter((value) => value != null)
+	const projectPeriodsComplete = authorProjects.length > 0 && projectPeriodValues.length === authorProjects.length
 	const projectPeriodTotal = projectPeriodValues.length
 		? projectPeriodValues.reduce((total, value) => total + value, 0)
 		: null
 
+	const lifetime = projectAllTime ?? finiteOrNull(primaryDownloads?.allTime)
+	const current = projectPeriodsComplete
+		? plausiblePeriodTotal(projectPeriodTotal, lifetime)
+		: plausiblePeriodTotal(primaryDownloads?.current, lifetime)
+			?? plausiblePeriodTotal(derivedCurrent, lifetime)
+			?? plausiblePeriodTotal(projectPeriodTotal, lifetime)
+	const rawCurrent = finiteOrNull(primaryDownloads?.current)
+	const rejectedCurrent = rawCurrent != null && plausiblePeriodTotal(rawCurrent, lifetime) == null
+
 	const downloads = {
-		current: optionalNumber(primaryDownloads?.current ?? derivedCurrent ?? projectPeriodTotal),
+		current: optionalNumber(current),
 		previous: optionalNumber(primaryDownloads?.previous),
-		allTime: optionalNumber(projectAllTime ?? primaryDownloads?.allTime),
+		allTime: optionalNumber(lifetime),
 		uniqueCurrent: optionalNumber(primaryDownloads?.uniqueCurrent),
 		uniquePrevious: optionalNumber(primaryDownloads?.uniquePrevious),
 		yesterday: optionalNumber(primaryDownloads?.yesterday),
@@ -232,9 +252,10 @@ export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
 	if (freshDownloadsHealthy) {
 		const missing = []
 		if (series.length === 0) missing.push('daily series')
-		if (authorProjects.length > 0 && projectPeriodValues.length === 0) missing.push('per-project period downloads')
+		if (authorProjects.length > 0 && !projectPeriodsComplete) missing.push('per-project period downloads')
+		if (rejectedCurrent) missing.push('valid period total')
 		if (missing.length > 0) {
-			const message = `CurseForge period analytics incomplete: missing ${missing.join(' and ')}`
+			const message = `CurseForge period analytics incomplete: missing ${missing.join(', ')}`
 			downloadsError = downloadsError ? `${downloadsError}; ${message}` : message
 		}
 	}
