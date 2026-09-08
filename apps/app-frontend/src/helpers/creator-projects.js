@@ -52,9 +52,26 @@ export function linkCreatorProjects(modrinthProjectId, curseForgeProjectId) {
 	const curseforge = normalizeId(curseForgeProjectId)
 	if (!modrinth || !curseforge) throw new Error('Both project IDs are required to synchronize projects.')
 
-	const links = readLinks().filter(
-		(link) => link.modrinth !== modrinth && link.curseforge !== curseforge,
+	const links = readLinks()
+	const exact = links.find(
+		(link) => link.modrinth === modrinth && link.curseforge === curseforge,
 	)
+	if (exact) return exact
+
+	const modrinthLink = links.find((link) => link.modrinth === modrinth)
+	if (modrinthLink) {
+		throw new Error(
+			`This Modrinth project is already linked to CurseForge project ${modrinthLink.curseforge}. Unlink it first.`,
+		)
+	}
+
+	const curseForgeLink = links.find((link) => link.curseforge === curseforge)
+	if (curseForgeLink) {
+		throw new Error(
+			`This CurseForge project is already linked to Modrinth project ${curseForgeLink.modrinth}. Unlink it first.`,
+		)
+	}
+
 	const link = {
 		id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
 		modrinth,
@@ -68,9 +85,12 @@ export function linkCreatorProjects(modrinthProjectId, curseForgeProjectId) {
 
 export function unlinkCreatorProjects(linkId) {
 	const id = normalizeId(linkId)
-	const links = readLinks().filter((link) => link.id !== id)
-	writeLinks(links)
-	return links
+	if (!id) return readLinks()
+
+	const links = readLinks()
+	const next = links.filter((link) => link.id !== id)
+	if (next.length !== links.length) writeLinks(next)
+	return next
 }
 
 export async function getCurseForgeAuthorProjects() {
