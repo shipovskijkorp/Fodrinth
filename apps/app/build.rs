@@ -376,6 +376,7 @@ fn main() {
                         "curseforge_open_author_portal",
                         "curseforge_get_author_analytics",
                         "curseforge_get_author_projects",
+                        "curseforge_get_author_projects_v2",
                         "curseforge_get_author_downloads",
                         "get_image_thumbnail",
                     ])
