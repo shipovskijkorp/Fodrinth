@@ -109,8 +109,8 @@ macro_rules! impl_serialize {
                         if let Some(code) = code {
                             state.serialize_field("code", code)?;
                         }
-                        if let Some(reason) = unavailable_reason {
-                            state.serialize_field("reason", reason)?;
+                        if let Some(unavailable_reason) = unavailable_reason {
+                            state.serialize_field("reason", unavailable_reason)?;
                         }
                         state.end()
                     }
