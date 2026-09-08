@@ -1,14 +1,24 @@
-const CURSEFORGE_AUTH_URL = 'https://authors-old.curseforge.com/account/api-tokens'
+import {
+	CURSEFORGE_AUTH_CHANGED_EVENT,
+	isCurseForgeAuthenticated,
+	openCurseForgeAuth,
+} from '@/helpers/curseforge-auth.js'
+
+function updateCurseForgeAuthButton(button) {
+	const authenticated = isCurseForgeAuthenticated()
+	button.classList.toggle('is-authenticated', authenticated)
+	button.setAttribute(
+		'aria-label',
+		authenticated ? 'CurseForge connected' : 'Sign into CurseForge',
+	)
+	button.title = authenticated ? 'CurseForge connected' : 'Sign into CurseForge'
+}
 
 function createCurseForgeAuthButton() {
-	const button = document.createElement('a')
-	button.href = CURSEFORGE_AUTH_URL
-	button.target = '_blank'
-	button.rel = 'noopener noreferrer'
+	const button = document.createElement('button')
+	button.type = 'button'
 	button.className =
 		'fodrinth-curseforge-auth w-12 h-12 text-primary rounded-full flex items-center justify-center text-2xl transition-all bg-transparent hover:bg-button-bg hover:text-contrast'
-	button.setAttribute('aria-label', 'Sign into CurseForge')
-	button.title = 'Sign into CurseForge'
 	button.innerHTML = `
 		<svg
 			xmlns="http://www.w3.org/2000/svg"
@@ -27,6 +37,8 @@ function createCurseForgeAuthButton() {
 			<line x1="15" x2="3" y1="12" y2="12" />
 		</svg>
 	`
+	button.addEventListener('click', openCurseForgeAuth)
+	updateCurseForgeAuthButton(button)
 	return button
 }
 
@@ -40,7 +52,7 @@ function patchNavbar() {
 	// In upstream App.vue the settings button sits immediately after the flex spacer.
 	// Move it into the main navigation group, directly above the spacer.
 	const elementAfterSpacer = spacer.nextElementSibling
-	if (elementAfterSpacer?.tagName === 'BUTTON') {
+	if (elementAfterSpacer?.tagName === 'BUTTON' && !elementAfterSpacer.classList.contains('fodrinth-curseforge-auth')) {
 		elementAfterSpacer.classList.add('fodrinth-settings-button')
 		navbar.insertBefore(elementAfterSpacer, spacer)
 	}
@@ -62,12 +74,20 @@ export function initFodrinthNavbar() {
 		})
 	}
 
+	const updateAuthState = () => {
+		document.querySelectorAll('.fodrinth-curseforge-auth').forEach(updateCurseForgeAuthButton)
+	}
+
 	const observer = new MutationObserver(queueUpdate)
 	observer.observe(document.documentElement, {
 		childList: true,
 		subtree: true,
 	})
+	window.addEventListener(CURSEFORGE_AUTH_CHANGED_EVENT, updateAuthState)
 
 	queueUpdate()
-	return () => observer.disconnect()
+	return () => {
+		observer.disconnect()
+		window.removeEventListener(CURSEFORGE_AUTH_CHANGED_EVENT, updateAuthState)
+	}
 }

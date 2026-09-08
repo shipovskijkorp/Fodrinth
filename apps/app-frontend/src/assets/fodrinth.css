@@ -15,12 +15,203 @@
 }
 
 .fodrinth-curseforge-auth {
+	position: relative;
 	cursor: pointer;
-	text-decoration: none;
+	border: 0;
+	padding: 0;
+	font: inherit;
 }
 
 .fodrinth-curseforge-auth svg {
 	width: 1em;
 	height: 1em;
 	color: #f16436 !important;
+}
+
+.fodrinth-curseforge-auth.is-authenticated::after {
+	content: '';
+	position: absolute;
+	right: 7px;
+	bottom: 7px;
+	width: 8px;
+	height: 8px;
+	border-radius: 9999px;
+	background: #4ade80;
+	box-shadow: 0 0 0 2px var(--color-raised-bg);
+}
+
+.fodrinth-cf-auth-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 1000;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 1rem;
+	background: rgb(0 0 0 / 62%);
+	backdrop-filter: blur(4px);
+}
+
+.fodrinth-cf-auth-backdrop[hidden] {
+	display: none !important;
+}
+
+.fodrinth-cf-auth-modal {
+	width: min(480px, calc(100vw - 2rem));
+	box-sizing: border-box;
+	padding: 1.5rem;
+	border: 1px solid var(--surface-5);
+	border-radius: var(--radius-xl);
+	background: var(--color-raised-bg);
+	color: var(--color-contrast);
+	box-shadow: 0 20px 60px rgb(0 0 0 / 35%);
+}
+
+.fodrinth-cf-auth-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 1rem;
+}
+
+.fodrinth-cf-auth-header h2 {
+	margin: 0;
+	font-size: 1.25rem;
+	font-weight: 700;
+	color: var(--color-contrast);
+}
+
+.fodrinth-cf-auth-header p,
+.fodrinth-cf-auth-note {
+	margin: 0.35rem 0 0;
+	color: var(--color-secondary);
+	line-height: 1.45;
+}
+
+.fodrinth-cf-auth-note {
+	margin-top: 1.25rem;
+	padding: 0.9rem 1rem;
+	border-radius: var(--radius-lg);
+	background: var(--surface-2);
+}
+
+.fodrinth-cf-auth-close {
+	min-width: 2rem;
+	height: 2rem;
+	border: 0;
+	border-radius: 9999px;
+	background: transparent;
+	color: var(--color-secondary);
+	font-size: 1.5rem;
+	line-height: 1;
+	cursor: pointer;
+}
+
+.fodrinth-cf-auth-close:hover {
+	background: var(--color-button-bg);
+	color: var(--color-contrast);
+}
+
+.fodrinth-cf-auth-label {
+	display: block;
+	margin-top: 1.25rem;
+	margin-bottom: 0.45rem;
+	font-weight: 600;
+	color: var(--color-primary);
+}
+
+.fodrinth-cf-auth-input {
+	width: 100%;
+	box-sizing: border-box;
+	padding: 0.75rem 0.9rem;
+	border: 1px solid var(--surface-5);
+	border-radius: var(--radius-lg);
+	outline: none;
+	background: var(--color-bg);
+	color: var(--color-contrast);
+	font: inherit;
+}
+
+.fodrinth-cf-auth-input:focus {
+	border-color: #f16436;
+	box-shadow: 0 0 0 2px rgb(241 100 54 / 20%);
+}
+
+.fodrinth-cf-auth-status {
+	margin-top: 0.7rem;
+	font-size: 0.9rem;
+	color: var(--color-secondary);
+}
+
+.fodrinth-cf-auth-status[data-type='success'] {
+	color: #4ade80;
+}
+
+.fodrinth-cf-auth-status[data-type='error'] {
+	color: #f87171;
+}
+
+.fodrinth-cf-auth-actions {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem;
+	margin-top: 1.4rem;
+}
+
+.fodrinth-cf-auth-actions-right {
+	display: flex;
+	gap: 0.5rem;
+}
+
+.fodrinth-cf-auth-button {
+	min-height: 2.5rem;
+	padding: 0.55rem 0.9rem;
+	border: 1px solid transparent;
+	border-radius: var(--radius-lg);
+	font: inherit;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.fodrinth-cf-auth-button:disabled,
+.fodrinth-cf-auth-close:disabled {
+	opacity: 0.55;
+	cursor: default;
+}
+
+.fodrinth-cf-auth-button-primary {
+	background: #f16436;
+	color: white;
+}
+
+.fodrinth-cf-auth-button-primary:hover:not(:disabled) {
+	filter: brightness(1.08);
+}
+
+.fodrinth-cf-auth-button-secondary {
+	border-color: var(--surface-5);
+	background: var(--color-button-bg);
+	color: var(--color-primary);
+}
+
+.fodrinth-cf-auth-button-danger {
+	border-color: rgb(248 113 113 / 35%);
+	background: rgb(248 113 113 / 12%);
+	color: #f87171;
+}
+
+@media (max-width: 560px) {
+	.fodrinth-cf-auth-actions {
+		align-items: stretch;
+		flex-direction: column;
+	}
+
+	.fodrinth-cf-auth-actions-right {
+		width: 100%;
+	}
+
+	.fodrinth-cf-auth-button {
+		flex: 1;
+	}
 }
