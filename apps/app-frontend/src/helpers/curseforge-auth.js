@@ -2,7 +2,7 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { openUrl } from '@tauri-apps/plugin-opener'
 
 const CURSEFORGE_TOKEN_STORAGE_KEY = 'fodrinth.curseforge.api-token'
-const CURSEFORGE_TOKEN_URL = 'https://www.curseforge.com/account/api-tokens'
+const CURSEFORGE_TOKEN_URL = 'https://authors-old.curseforge.com/account/api-tokens'
 const CURSEFORGE_TOKEN_VALIDATION_URL = 'https://minecraft.curseforge.com/api/game/versions'
 
 export const CURSEFORGE_AUTH_CHANGED_EVENT = 'fodrinth:curseforge-auth-changed'
@@ -95,6 +95,11 @@ export async function validateCurseForgeToken(token) {
 		throw new Error(`CurseForge returned HTTP ${response.status}`)
 	}
 
+	const body = await response.json().catch(() => null)
+	if (!Array.isArray(body)) {
+		throw new Error('CurseForge returned an unexpected response')
+	}
+
 	return true
 }
 
@@ -122,12 +127,8 @@ async function connect() {
 		renderAuthState()
 	} catch (error) {
 		console.error('Failed to validate CurseForge API token', error)
-		setStatus(
-			error instanceof Error
-				? `Could not connect to CurseForge: ${error.message}`
-				: 'Could not connect to CurseForge.',
-			'error',
-		)
+		const message = error instanceof Error ? error.message : String(error || 'Unknown error')
+		setStatus(`Could not connect to CurseForge: ${message}`, 'error')
 	} finally {
 		setBusy(false)
 	}
