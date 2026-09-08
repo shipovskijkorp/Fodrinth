@@ -75,7 +75,7 @@ async fn poll_augmented_result<R: Runtime>(window: &WebviewWindow<R>) -> Result<
 }
 
 #[tauri::command]
-pub async fn curseforge_get_author_downloads<R: Runtime>(
+pub async fn curseforge_get_author_downloads_v6<R: Runtime>(
 	app: AppHandle<R>,
 	period_days: u32,
 	known_projects: Option<Value>,
