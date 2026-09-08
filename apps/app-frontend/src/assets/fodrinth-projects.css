@@ -219,46 +219,70 @@
 }
 
 .fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-card {
+	display: grid !important;
+	grid-template-columns: minmax(0, 1fr) auto;
+	grid-template-rows: auto auto 1fr auto;
 	min-height: 0 !important;
 	aspect-ratio: 1 / 1;
+	column-gap: 0.75rem !important;
+	row-gap: 0.8rem !important;
+	align-content: stretch;
+}
+
+.fodrinth-projects-page .project-grid.fodrinth-layout-3 .provider-corner {
+	position: static !important;
+	top: auto !important;
+	right: auto !important;
+	grid-column: 2;
+	grid-row: 1;
+	align-self: start;
+	justify-self: end;
+	z-index: 2;
 }
 
 .fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-card-main {
+	grid-column: 1;
+	grid-row: 1;
 	min-width: 0;
+	align-items: flex-start;
 }
 
 .fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-card-main > div:last-child {
 	min-width: 0;
-	padding-right: 4.75rem !important;
+	padding-right: 0 !important;
 }
 
 .fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-card-main > div:last-child > div:first-child {
+	display: flex !important;
+	width: 100%;
 	min-width: 0;
+	flex-direction: column !important;
 	align-items: flex-start !important;
-	flex-wrap: wrap;
-	gap: 0.3rem 0.45rem !important;
+	gap: 0.3rem !important;
 }
 
+.fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-card-main h2.truncate,
 .fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-card-main h2 {
 	display: -webkit-box !important;
+	width: 100% !important;
+	max-width: 100% !important;
 	min-width: 0;
-	flex: 1 1 100%;
-	overflow: hidden;
-	text-overflow: clip;
+	flex: none !important;
+	overflow: hidden !important;
+	text-overflow: clip !important;
 	white-space: normal !important;
 	overflow-wrap: anywhere;
+	word-break: normal;
 	line-height: 1.25;
 	-webkit-box-orient: vertical;
-	-webkit-line-clamp: 2;
+	-webkit-line-clamp: 2 !important;
+	line-clamp: 2;
 }
 
 .fodrinth-projects-page .project-grid.fodrinth-layout-3 .synced-chip {
 	max-width: 100%;
 	flex: 0 0 auto;
-}
-
-.fodrinth-projects-page .project-grid.fodrinth-layout-3 .provider-corner {
-	z-index: 2;
+	align-self: flex-start;
 }
 
 .fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-image {
@@ -270,13 +294,22 @@
 	-webkit-line-clamp: 3 !important;
 }
 
-.fodrinth-projects-page .project-grid.fodrinth-layout-3 .provider-line,
-.fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-actions {
+.fodrinth-projects-page .project-grid.fodrinth-layout-3 .provider-lines {
+	grid-column: 1 / -1;
+	grid-row: 2;
+	min-width: 0;
+}
+
+.fodrinth-projects-page .project-grid.fodrinth-layout-3 .provider-line {
 	min-width: 0;
 }
 
 .fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-actions {
+	grid-column: 1 / -1;
+	grid-row: 4;
+	min-width: 0;
 	row-gap: 0.45rem;
+	margin-top: 0;
 }
 
 @media (max-width: 1100px) {
@@ -287,10 +320,6 @@
 	.fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-card {
 		aspect-ratio: auto;
 		min-height: 220px !important;
-	}
-
-	.fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-card-main > div:last-child {
-		padding-right: 4.75rem !important;
 	}
 }
 
