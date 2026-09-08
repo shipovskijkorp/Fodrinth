@@ -119,23 +119,35 @@ function isProviderFresh(provider) {
 	return !!provider && providerAge(provider) < FRESH_FOR_MS
 }
 
-function isCurseForgeFresh(provider) {
+function isCurseForgeFresh(provider, periodDays = 30) {
 	if (!isProviderFresh(provider) || provider?.error) return false
 	const analytics = provider?.analytics
 	if (!analytics || analytics.needsLogin || analytics.connected === false || analytics.downloadsError) return false
 	const downloads = analytics.downloads
 	if (!downloads || typeof downloads !== 'object') return false
 	const hasNumber = (value) => value != null && value !== '' && Number.isFinite(Number(value))
-	return (
+	const hasAnyPayload =
 		hasNumber(downloads.current) ||
 		hasNumber(downloads.allTime) ||
 		(downloads.series?.length ?? 0) > 0 ||
 		(downloads.projects?.length ?? 0) > 0
-	)
+	if (!hasAnyPayload) return false
+
+	// Unlike 7d/30d, CurseForge has no dedicated 90-day KPI tile. A cached 90d snapshot with
+	// only all-time/project metadata is therefore incomplete: it must contain the selected
+	// 90-day chart series and at least one per-project period total before we stop retrying it.
+	if (Number(periodDays) === 90) {
+		const projects = Array.isArray(downloads.projects) ? downloads.projects : []
+		const hasProjectPeriods = projects.some((project) =>
+			hasNumber(project?.period) || hasNumber(project?.current),
+		)
+		return hasNumber(downloads.current) && (downloads.series?.length ?? 0) > 0 && hasProjectPeriods
+	}
+	return true
 }
 
 function isPeriodFresh(snapshot) {
-	return isProviderFresh(snapshot?.modrinth) && isCurseForgeFresh(snapshot?.curseforge)
+	return isProviderFresh(snapshot?.modrinth) && isCurseForgeFresh(snapshot?.curseforge, snapshot?.periodDays)
 }
 
 async function cacheMatchesCurrentModrinthUser(snapshot) {
