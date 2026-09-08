@@ -62,7 +62,7 @@ async fn poll_augmented_result<R: Runtime>(window: &WebviewWindow<R>) -> Result<
 		.map_err(|error| format!("Could not start CurseForge project analytics bridge: {error}"))?;
 
 	let started = std::time::Instant::now();
-	while started.elapsed() < Duration::from_secs(25) {
+	while started.elapsed() < Duration::from_secs(60) {
 		if let Some(raw) = query_param(window, RESULT_PARAM)? {
 			let _ = clear_query_param(window, RESULT_PARAM);
 			return serde_json::from_str::<Value>(&raw)
@@ -97,6 +97,8 @@ pub async fn curseforge_get_author_downloads_v6<R: Runtime>(
 		return Ok(base);
 	};
 
+	// WebView2 can suspend lazy chart layout in a completely hidden window. Keep the Authors
+	// dashboard rendered off-screen while the mapper reads the period charts.
 	let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
 	let _ = window.set_skip_taskbar(true);
 	let _ = window.show();
@@ -107,7 +109,7 @@ pub async fn curseforge_get_author_downloads_v6<R: Runtime>(
 				const headings = Array.from(document.querySelectorAll('body *')).filter((element) => {
 					if (element.children.length > 5) return false;
 					const text = String(element.textContent || '').replace(/\s+/g, ' ').trim();
-					return /downloads over time/i.test(text) && /per project/i.test(text);
+					return /downloads/i.test(text) && /project/i.test(text);
 				});
 				const heading = headings[0];
 				if (heading) heading.scrollIntoView({ block: 'center', inline: 'nearest' });
