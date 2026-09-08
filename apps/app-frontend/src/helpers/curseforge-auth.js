@@ -2,8 +2,10 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { openUrl } from '@tauri-apps/plugin-opener'
 
 const CURSEFORGE_TOKEN_STORAGE_KEY = 'fodrinth.curseforge.api-token'
+const CURSEFORGE_PROFILE_STORAGE_KEY = 'fodrinth.curseforge.profile'
 const CURSEFORGE_TOKEN_URL = 'https://authors-old.curseforge.com/account/api-tokens'
 const CURSEFORGE_TOKEN_VALIDATION_URL = 'https://minecraft.curseforge.com/api/game/versions'
+const CURSEFORGE_PROFILE_URL = 'https://api.curseforge.com/v1/users/me'
 
 export const CURSEFORGE_AUTH_CHANGED_EVENT = 'fodrinth:curseforge-auth-changed'
 
@@ -20,6 +22,19 @@ export function getCurseForgeToken() {
 	return localStorage.getItem(CURSEFORGE_TOKEN_STORAGE_KEY)?.trim() || null
 }
 
+export function getCurseForgeProfile() {
+	const raw = localStorage.getItem(CURSEFORGE_PROFILE_STORAGE_KEY)
+	if (!raw) return null
+
+	try {
+		const profile = JSON.parse(raw)
+		return profile && typeof profile === 'object' ? profile : null
+	} catch {
+		localStorage.removeItem(CURSEFORGE_PROFILE_STORAGE_KEY)
+		return null
+	}
+}
+
 export function isCurseForgeAuthenticated() {
 	return getCurseForgeToken() !== null
 }
@@ -32,9 +47,65 @@ export function getCurseForgeAuthHeaders() {
 function emitAuthChanged() {
 	window.dispatchEvent(
 		new CustomEvent(CURSEFORGE_AUTH_CHANGED_EVENT, {
-			detail: { authenticated: isCurseForgeAuthenticated() },
+			detail: {
+				authenticated: isCurseForgeAuthenticated(),
+				profile: getCurseForgeProfile(),
+			},
 		}),
 	)
+}
+
+function normalizeProfile(raw) {
+	const source = raw?.data ?? raw
+	if (!source || typeof source !== 'object') return null
+
+	const username = source.username ?? source.userName ?? null
+	const displayName = source.displayName ?? source.display_name ?? username ?? null
+	const avatarUrl = source.avatarUrl ?? source.avatar_url ?? null
+	const id = source.id ?? source.userId ?? source.user_id ?? null
+
+	if (!username && !displayName && !avatarUrl) return null
+
+	return {
+		id,
+		username,
+		displayName,
+		avatarUrl,
+	}
+}
+
+async function fetchCurseForgeProfile(token) {
+	const normalized = token?.trim()
+	if (!normalized) return null
+
+	// The legacy author/upload token and the newer CurseForge user session are
+	// separate auth systems. Try both header shapes here so accounts backed by
+	// the user API can expose their real profile without making upload auth fail.
+	const response = await tauriFetch(CURSEFORGE_PROFILE_URL, {
+		method: 'GET',
+		headers: {
+			Accept: 'application/json',
+			Authorization: `Bearer ${normalized}`,
+			'X-Api-Token': normalized,
+		},
+	})
+
+	if (response.status === 401 || response.status === 403 || response.status === 404) return null
+	if (!response.ok) return null
+
+	return normalizeProfile(await response.json().catch(() => null))
+}
+
+export async function refreshCurseForgeProfile() {
+	const token = getCurseForgeToken()
+	if (!token) return null
+
+	const profile = await fetchCurseForgeProfile(token)
+	if (!profile) return null
+
+	localStorage.setItem(CURSEFORGE_PROFILE_STORAGE_KEY, JSON.stringify(profile))
+	emitAuthChanged()
+	return profile
 }
 
 function setStatus(message, type = 'info') {
@@ -123,8 +194,15 @@ async function connect() {
 		}
 
 		localStorage.setItem(CURSEFORGE_TOKEN_STORAGE_KEY, token)
+		localStorage.removeItem(CURSEFORGE_PROFILE_STORAGE_KEY)
 		emitAuthChanged()
 		renderAuthState()
+
+		// Profile lookup is best-effort. A valid author token remains connected
+		// even when CurseForge does not expose user identity for that token type.
+		void refreshCurseForgeProfile().catch((error) => {
+			console.debug('CurseForge profile lookup is unavailable for this token', error)
+		})
 	} catch (error) {
 		console.error('Failed to validate CurseForge API token', error)
 		const message = error instanceof Error ? error.message : String(error || 'Unknown error')
@@ -137,6 +215,7 @@ async function connect() {
 function disconnect() {
 	if (isBusy) return
 	localStorage.removeItem(CURSEFORGE_TOKEN_STORAGE_KEY)
+	localStorage.removeItem(CURSEFORGE_PROFILE_STORAGE_KEY)
 	emitAuthChanged()
 	renderAuthState()
 	setStatus('Disconnected from CurseForge.', 'info')

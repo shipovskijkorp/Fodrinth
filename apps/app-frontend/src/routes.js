@@ -11,6 +11,24 @@ export default new createRouter({
 			component: () => import('@/pages/Index.vue'),
 		},
 		{
+			path: '/projects',
+			name: 'Creator projects',
+			component: () => import('@/pages/FodrinthCreatorPlaceholder.vue'),
+			props: {
+				title: 'Projects',
+				description: 'Unified Modrinth and CurseForge project management will live here.',
+			},
+		},
+		{
+			path: '/analytics',
+			name: 'Creator analytics',
+			component: () => import('@/pages/FodrinthCreatorPlaceholder.vue'),
+			props: {
+				title: 'Analytics',
+				description: 'Combined downloads, platform comparisons, and creator analytics will live here.',
+			},
+		},
+		{
 			path: '/hosting/manage/',
 			name: 'Servers',
 			component: () => import('@/pages/Servers.vue'),
