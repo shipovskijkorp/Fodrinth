@@ -32,7 +32,6 @@ const loading = ref(false)
 const errorMessage = ref('')
 const curseForgeError = ref('')
 const curseForgePortalNeedsLogin = ref(false)
-const modrinthCredentials = ref(null)
 const modrinthProjects = ref([])
 const curseForgeProjects = ref([])
 const projectLinks = ref(getCreatorProjectLinks())
@@ -43,6 +42,7 @@ const editCard = ref(null)
 const editBusy = ref(false)
 const editResults = ref([])
 const editProviders = ref({ modrinth: false, curseforge: false })
+const editInitial = ref(null)
 const editForm = ref({
 	name: '',
 	summary: '',
@@ -176,22 +176,6 @@ function cardDownloads(card) {
 	return mr ?? cf
 }
 
-function providerProject(card, provider) {
-	return provider === 'modrinth' ? card?.modrinth : card?.curseforge
-}
-
-function cardHasProvider(card, provider) {
-	return !!providerProject(card, provider)
-}
-
-function providerLabel(provider) {
-	return provider === 'modrinth' ? 'Modrinth' : 'CurseForge'
-}
-
-function providerIcon(provider) {
-	return provider === 'modrinth' ? ModrinthIcon : CurseForgeIcon
-}
-
 function providerClass(provider) {
 	return provider === 'modrinth' ? 'provider-modrinth' : 'provider-curseforge'
 }
@@ -238,9 +222,8 @@ async function refreshProjects() {
 
 	try {
 		const credentials = await getModrinthCredentials().catch(() => null)
-		modrinthCredentials.value = credentials
-
 		const jobs = []
+
 		if (credentials?.user_id) {
 			jobs.push(
 				get_user_projects(credentials.user_id)
@@ -298,19 +281,33 @@ function openEdit(card) {
 		modrinth: !!card.modrinth,
 		curseforge: !!card.curseforge,
 	}
-	editForm.value = {
+	const values = {
 		name: projectName(source, ''),
 		summary: source.summary ?? '',
 		description: source.description ?? '',
 		sourceUrl: source.source_url ?? source.sourceUrl ?? '',
 		issuesUrl: source.issues_url ?? source.issuesUrl ?? '',
 	}
+	editForm.value = { ...values }
+	editInitial.value = { ...values }
 }
 
 function closeEdit() {
 	if (editBusy.value) return
 	editCard.value = null
+	editInitial.value = null
 	editResults.value = []
+}
+
+function changedEditFields() {
+	if (!editInitial.value) return { ...editForm.value }
+	const changed = {}
+	for (const key of Object.keys(editForm.value)) {
+		if (String(editForm.value[key] ?? '') !== String(editInitial.value[key] ?? '')) {
+			changed[key] = editForm.value[key]
+		}
+	}
+	return changed
 }
 
 async function saveEdit() {
@@ -320,46 +317,63 @@ async function saveEdit() {
 		return
 	}
 
+	const changed = changedEditFields()
+	if (!Object.keys(changed).length) {
+		editResults.value = [{ provider: 'Fodrinth', ok: true, message: 'No fields changed.' }]
+		return
+	}
+
 	editBusy.value = true
 	editResults.value = []
-	const jobs = []
-	const patch = { ...editForm.value }
+	try {
+		const jobs = []
 
-	if (editProviders.value.modrinth && editCard.value.modrinth) {
-		const project = editCard.value.modrinth
-		jobs.push({
-			provider: 'Modrinth',
-			promise: client.labrinth.projects_v3.edit(project.id, {
-				name: patch.name,
-				summary: patch.summary,
-				description: patch.description,
-				source_url: patch.sourceUrl.trim() || null,
-				issues_url: patch.issuesUrl.trim() || null,
-			}),
-		})
+		if (editProviders.value.modrinth && editCard.value.modrinth) {
+			const project = editCard.value.modrinth
+			const patch = {}
+			if ('name' in changed) patch.name = changed.name
+			if ('summary' in changed) patch.summary = changed.summary
+			if ('description' in changed) patch.description = changed.description
+			if ('sourceUrl' in changed) patch.source_url = String(changed.sourceUrl).trim() || null
+			if ('issuesUrl' in changed) patch.issues_url = String(changed.issuesUrl).trim() || null
+			jobs.push({
+				provider: 'Modrinth',
+				promise: client.labrinth.projects_v3.edit(project.id, patch),
+			})
+		}
+
+		if (editProviders.value.curseforge && editCard.value.curseforge) {
+			jobs.push({
+				provider: 'CurseForge',
+				promise: updateCurseForgeProject(editCard.value.curseforge.id, changed),
+			})
+		}
+
+		const settled = await Promise.allSettled(jobs.map((job) => job.promise))
+		editResults.value = settled.map((result, index) => ({
+			provider: jobs[index].provider,
+			ok: result.status === 'fulfilled',
+			message:
+				result.status === 'fulfilled'
+					? 'Saved'
+					: result.reason instanceof Error
+						? result.reason.message
+						: String(result.reason),
+		}))
+
+		if (editResults.value.some((result) => result.ok)) {
+			editInitial.value = { ...editForm.value }
+			await refreshProjects()
+		}
+	} catch (error) {
+		editResults.value = [{
+			provider: 'Fodrinth',
+			ok: false,
+			message: error instanceof Error ? error.message : String(error),
+		}]
+	} finally {
+		editBusy.value = false
 	}
-
-	if (editProviders.value.curseforge && editCard.value.curseforge) {
-		jobs.push({
-			provider: 'CurseForge',
-			promise: updateCurseForgeProject(editCard.value.curseforge.id, patch),
-		})
-	}
-
-	const settled = await Promise.allSettled(jobs.map((job) => job.promise))
-	editResults.value = settled.map((result, index) => ({
-		provider: jobs[index].provider,
-		ok: result.status === 'fulfilled',
-		message:
-			result.status === 'fulfilled'
-				? 'Saved'
-				: result.reason instanceof Error
-					? result.reason.message
-					: String(result.reason),
-	}))
-
-	if (editResults.value.some((result) => result.ok)) await refreshProjects()
-	editBusy.value = false
 }
 
 function csvValues(value) {
@@ -368,6 +382,27 @@ function csvValues(value) {
 		.map((part) => part.trim())
 		.filter(Boolean)
 		.filter((part, index, values) => values.indexOf(part) === index)
+}
+
+function modrinthLoaderName(value) {
+	const text = String(value ?? '').trim()
+	const key = text.toLowerCase().replace(/[ _-]+/g, '')
+	const known = {
+		neoforge: 'neoforge',
+		forge: 'forge',
+		fabric: 'fabric',
+		quilt: 'quilt',
+		liteloader: 'liteloader',
+		rift: 'rift',
+		bukkit: 'bukkit',
+		spigot: 'spigot',
+		paper: 'paper',
+		purpur: 'purpur',
+		folia: 'folia',
+		velocity: 'velocity',
+		waterfall: 'waterfall',
+	}
+	return known[key] || text.toLowerCase()
 }
 
 function openUpload(card) {
@@ -438,61 +473,71 @@ async function saveUpload() {
 	uploadBusy.value = true
 	uploadResults.value = []
 	uploadProgress.value = { modrinth: null, curseforge: null }
-	const jobs = []
-	const release = {
-		versionNumber: uploadForm.value.versionNumber.trim(),
-		name: uploadForm.value.name.trim() || uploadForm.value.versionNumber.trim(),
-		releaseType: uploadForm.value.releaseType,
-		gameVersions,
-		loaders,
-		changelog: uploadForm.value.changelog,
-	}
+	try {
+		const jobs = []
+		const release = {
+			versionNumber: uploadForm.value.versionNumber.trim(),
+			name: uploadForm.value.name.trim() || uploadForm.value.versionNumber.trim(),
+			releaseType: uploadForm.value.releaseType,
+			gameVersions,
+			loaders,
+			changelog: uploadForm.value.changelog,
+		}
 
-	if (uploadProviders.value.modrinth && uploadCard.value.modrinth) {
-		const project = uploadCard.value.modrinth
-		const handle = client.labrinth.versions_v3.createVersion(
-			{
-				project_id: project.id,
-				version_number: release.versionNumber,
-				name: release.name,
-				changelog: release.changelog,
-				dependencies: [],
-				game_versions: release.gameVersions,
-				version_type: release.releaseType,
-				featured: false,
-				loaders: release.loaders,
-			},
-			[{ file }],
-			modrinthProjectType(project),
-		)
-		handle.onProgress((progress) => {
-			uploadProgress.value = {
-				...uploadProgress.value,
-				modrinth: Math.round((progress?.progress ?? 0) * 100),
-			}
-		})
-		jobs.push({ provider: 'Modrinth', promise: handle.promise })
-	}
+		if (uploadProviders.value.modrinth && uploadCard.value.modrinth) {
+			const project = uploadCard.value.modrinth
+			const modrinthLoaders = release.loaders.map(modrinthLoaderName)
+			const handle = client.labrinth.versions_v3.createVersion(
+				{
+					project_id: project.id,
+					version_number: release.versionNumber,
+					name: release.name,
+					changelog: release.changelog,
+					dependencies: [],
+					game_versions: release.gameVersions,
+					version_type: release.releaseType,
+					featured: false,
+					loaders: modrinthLoaders,
+				},
+				[{ file }],
+				modrinthProjectType(project),
+			)
+			handle.onProgress((progress) => {
+				uploadProgress.value = {
+					...uploadProgress.value,
+					modrinth: Math.round((progress?.progress ?? 0) * 100),
+				}
+			})
+			jobs.push({ provider: 'Modrinth', promise: handle.promise })
+		}
 
-	if (uploadProviders.value.curseforge && uploadCard.value.curseforge) {
-		jobs.push({
-			provider: 'CurseForge',
-			promise: uploadCurseForgeProjectFile(uploadCard.value.curseforge.id, file, release),
-		})
-	}
+		if (uploadProviders.value.curseforge && uploadCard.value.curseforge) {
+			jobs.push({
+				provider: 'CurseForge',
+				promise: uploadCurseForgeProjectFile(uploadCard.value.curseforge.id, file, release),
+			})
+		}
 
-	const settled = await Promise.allSettled(jobs.map((job) => job.promise))
-	uploadResults.value = settled.map((result, index) => ({
-		provider: jobs[index].provider,
-		ok: result.status === 'fulfilled',
-		message:
-			result.status === 'fulfilled'
-				? 'Uploaded'
-				: result.reason instanceof Error
-					? result.reason.message
-					: String(result.reason),
-	}))
-	uploadBusy.value = false
+		const settled = await Promise.allSettled(jobs.map((job) => job.promise))
+		uploadResults.value = settled.map((result, index) => ({
+			provider: jobs[index].provider,
+			ok: result.status === 'fulfilled',
+			message:
+				result.status === 'fulfilled'
+					? 'Uploaded'
+					: result.reason instanceof Error
+						? result.reason.message
+						: String(result.reason),
+		}))
+	} catch (error) {
+		uploadResults.value = [{
+			provider: 'Fodrinth',
+			ok: false,
+			message: error instanceof Error ? error.message : String(error),
+		}]
+	} finally {
+		uploadBusy.value = false
+	}
 }
 
 const alreadyLinkedModrinth = computed(
