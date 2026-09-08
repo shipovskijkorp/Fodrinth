@@ -37,6 +37,7 @@ const curseForgeProjects = ref([])
 const projectLinks = ref(getCreatorProjectLinks())
 const sourceFilter = ref('all')
 const searchQuery = ref('')
+const sortMode = ref('updated')
 
 const editCard = ref(null)
 const editBusy = ref(false)
@@ -97,6 +98,46 @@ function projectStatus(project) {
 	return project?.status ?? project?.requested_status ?? null
 }
 
+function projectTimestamp(project, fields) {
+	for (const field of fields) {
+		const raw = project?.[field]
+		if (raw == null || raw === '') continue
+
+		if (typeof raw === 'number' && Number.isFinite(raw)) {
+			return raw > 1_000_000_000_000 ? raw : raw * 1000
+		}
+
+		const parsed = Date.parse(String(raw))
+		if (Number.isFinite(parsed)) return parsed
+	}
+	return 0
+}
+
+function projectUpdated(project) {
+	return projectTimestamp(project, [
+		'updated',
+		'date_modified',
+		'dateModified',
+		'modified',
+		'modifiedAt',
+		'updatedAt',
+		'lastUpdated',
+		'dateReleased',
+		'date_released',
+		'latestFileDate',
+	])
+}
+
+function projectCreated(project) {
+	return projectTimestamp(project, [
+		'published',
+		'date_created',
+		'dateCreated',
+		'created',
+		'createdAt',
+	])
+}
+
 function missingProject(id, provider) {
 	return {
 		id,
@@ -145,7 +186,7 @@ const cards = computed(() => {
 		result.push({ id: `curseforge:${id}`, kind: 'curseforge', modrinth: null, curseforge: project })
 	}
 
-	return result.sort((a, b) => cardTitle(a).localeCompare(cardTitle(b)))
+	return result
 })
 
 function primaryProject(card) {
@@ -176,6 +217,20 @@ function cardDownloads(card) {
 	return mr ?? cf
 }
 
+function cardUpdated(card) {
+	return Math.max(
+		card?.modrinth?._missing ? 0 : projectUpdated(card?.modrinth),
+		card?.curseforge?._missing ? 0 : projectUpdated(card?.curseforge),
+	)
+}
+
+function cardCreated(card) {
+	return Math.max(
+		card?.modrinth?._missing ? 0 : projectCreated(card?.modrinth),
+		card?.curseforge?._missing ? 0 : projectCreated(card?.curseforge),
+	)
+}
+
 function providerClass(provider) {
 	return provider === 'modrinth' ? 'provider-modrinth' : 'provider-curseforge'
 }
@@ -184,9 +239,27 @@ function formatDownloads(value) {
 	return value == null ? '—' : numberFormatter.format(value)
 }
 
+function compareProjectCards(a, b) {
+	const byName = cardTitle(a).localeCompare(cardTitle(b), undefined, { sensitivity: 'base' })
+
+	switch (sortMode.value) {
+		case 'downloads':
+			return (cardDownloads(b) ?? -1) - (cardDownloads(a) ?? -1) || byName
+		case 'newest':
+			return cardCreated(b) - cardCreated(a) || byName
+		case 'name-desc':
+			return -byName
+		case 'name-asc':
+			return byName
+		case 'updated':
+		default:
+			return cardUpdated(b) - cardUpdated(a) || byName
+	}
+}
+
 const filteredCards = computed(() => {
 	const query = searchQuery.value.trim().toLowerCase()
-	return cards.value.filter((card) => {
+	const filtered = cards.value.filter((card) => {
 		if (sourceFilter.value === 'synced' && card.kind !== 'linked') return false
 		if (sourceFilter.value === 'modrinth' && !card.modrinth) return false
 		if (sourceFilter.value === 'curseforge' && !card.curseforge) return false
@@ -205,6 +278,8 @@ const filteredCards = computed(() => {
 			.toLowerCase()
 		return text.includes(query)
 	})
+
+	return filtered.sort(compareProjectCards)
 })
 
 const counts = computed(() => ({
@@ -689,12 +764,21 @@ onBeforeUnmount(() => {
 						<span class="filter-count">{{ counts[filter.id] }}</span>
 					</button>
 				</div>
-				<input
-					v-model="searchQuery"
-					type="search"
-					class="project-input"
-					placeholder="Search your projects…"
-				/>
+				<div class="grid gap-2 md:grid-cols-[minmax(0,1fr)_14rem]">
+					<input
+						v-model="searchQuery"
+						type="search"
+						class="project-input"
+						placeholder="Search your projects…"
+					/>
+					<select v-model="sortMode" class="project-input" aria-label="Sort projects">
+						<option value="updated">Recently updated</option>
+						<option value="downloads">Downloads</option>
+						<option value="newest">Newest</option>
+						<option value="name-asc">Name A–Z</option>
+						<option value="name-desc">Name Z–A</option>
+					</select>
+				</div>
 			</div>
 
 			<div v-if="loading && cards.length === 0" class="empty-state">
