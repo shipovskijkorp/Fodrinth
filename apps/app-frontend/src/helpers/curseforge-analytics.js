@@ -19,6 +19,15 @@ function optionalNumber(value) {
 	return number == null ? undefined : number
 }
 
+function normalizeProjectName(value) {
+	return String(value ?? '')
+		.toLowerCase()
+		.replace(/\u2026|\.{3,}$/g, '')
+		.replace(/[^a-z0-9]+/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim()
+}
+
 function normalizeProject(project) {
 	const id = String(project?.id ?? '').trim()
 	const name = String(project?.name ?? project?.title ?? project?.slug ?? id).trim()
@@ -38,6 +47,27 @@ function normalizeProject(project) {
 	}
 }
 
+function findProjectAnalytics(byName, fallbackName) {
+	const key = normalizeProjectName(fallbackName)
+	if (!key) return null
+	const exact = byName.get(key)
+	if (exact) return exact
+
+	// The Authors graph can visually truncate long legend labels. textContent is normally
+	// complete, but keep a conservative prefix fallback for dashboard variants that emit the
+	// shortened label into the DOM itself.
+	let best = null
+	let bestLength = 0
+	for (const [candidateKey, project] of byName) {
+		const shared = candidateKey.startsWith(key) ? key.length : key.startsWith(candidateKey) ? candidateKey.length : 0
+		if (shared >= 10 && shared > bestLength) {
+			best = project
+			bestLength = shared
+		}
+	}
+	return best
+}
+
 function mergeDownloadProjects(downloadProjects, authorProjects) {
 	const byId = new Map()
 	const byName = new Map()
@@ -46,7 +76,7 @@ function mergeDownloadProjects(downloadProjects, authorProjects) {
 		const project = normalizeProject(raw)
 		if (!project) continue
 		byId.set(project.id, project)
-		byName.set(project.name.toLowerCase(), project)
+		byName.set(normalizeProjectName(project.name), project)
 	}
 
 	const merged = []
@@ -54,11 +84,13 @@ function mergeDownloadProjects(downloadProjects, authorProjects) {
 	for (const raw of authorProjects ?? []) {
 		const fallback = normalizeProject(raw)
 		if (!fallback) continue
-		const analytics = byId.get(fallback.id) ?? byName.get(fallback.name.toLowerCase()) ?? null
+		const analytics = byId.get(fallback.id) ?? findProjectAnalytics(byName, fallback.name)
 		const project = analytics
 			? {
 				...fallback,
-				...analytics,
+				period: analytics.period ?? fallback.period,
+				current: analytics.current ?? fallback.current,
+				unique: analytics.unique ?? fallback.unique,
 				icon: analytics.icon ?? fallback.icon,
 				allTime: fallback.allTime ?? analytics.allTime,
 			}
@@ -86,6 +118,22 @@ function hasDownloadPayload(downloads) {
 		(downloads.series?.length ?? 0) > 0 ||
 		(downloads.projects?.length ?? 0) > 0
 	)
+}
+
+function deriveCurrentFromSeries(series, periodDays) {
+	const days = Math.max(1, Number(periodDays) || 30)
+	const start = Date.now() - (days + 1) * 24 * 60 * 60 * 1000
+	const end = Date.now() + 24 * 60 * 60 * 1000
+	let total = 0
+	let count = 0
+	for (const row of series ?? []) {
+		const timestamp = new Date(row?.date ?? row?.timestamp ?? row?.time).getTime()
+		const value = finiteOrNull(row?.total ?? row?.value)
+		if (!Number.isFinite(timestamp) || timestamp < start || timestamp > end || value == null) continue
+		total += value
+		count++
+	}
+	return count >= Math.min(days, 5) ? total : null
 }
 
 async function settle(promise) {
@@ -147,9 +195,14 @@ export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
 		: null
 
 	const series = Array.isArray(freshDownloads?.series) ? freshDownloads.series : []
+	const derivedCurrent = deriveCurrentFromSeries(series, periodDays)
+	const projectPeriodValues = projects.map((project) => finiteOrNull(project.period ?? project.current)).filter((value) => value != null)
+	const projectPeriodTotal = projectPeriodValues.length
+		? projectPeriodValues.reduce((total, value) => total + value, 0)
+		: null
 
 	const downloads = {
-		current: optionalNumber(primaryDownloads?.current),
+		current: optionalNumber(primaryDownloads?.current ?? derivedCurrent ?? projectPeriodTotal),
 		previous: optionalNumber(primaryDownloads?.previous),
 		allTime: optionalNumber(projectAllTime ?? primaryDownloads?.allTime),
 		uniqueCurrent: optionalNumber(primaryDownloads?.uniqueCurrent),
