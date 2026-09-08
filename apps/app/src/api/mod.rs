@@ -4,6 +4,7 @@ use thiserror::Error;
 
 pub mod auth;
 pub mod curseforge_analytics;
+pub mod curseforge_projects;
 pub mod import;
 pub mod install;
 pub mod instance;
@@ -44,7 +45,7 @@ pub type Result<T> = std::result::Result<T, TheseusSerializableError>;
 //     Serializable(),
 // }
 
-// Serializable error intermediary, so TheseusGuiError can be Serializable (eg: so that we can return theseus::Errors in Tauri directly)
+// Serializable error intermediary, so TheseusGuiError can be Serializable (eg: so that TheseusGuiError can be Serializable (eg: so that errors can be returned to the JavaScript side)
 #[derive(Error, Debug)]
 pub enum TheseusSerializableError {
     #[error("{0}")]
@@ -127,7 +128,7 @@ macro_rules! impl_serialize {
     };
 }
 
-// Use the macro to implement Serialize for TheseusSerializableError
+// Use the macro to implement Serialize for each variant of TheseusSerializableError
 #[cfg(not(feature = "updater"))]
 impl_serialize! {
     IO,
