@@ -3,9 +3,7 @@ use serde::{Serialize, Serializer};
 use thiserror::Error;
 
 pub mod auth;
-pub mod curseforge_analytics;
 pub mod curseforge_creator_bridge;
-pub mod curseforge_projects;
 pub mod import;
 pub mod install;
 pub mod instance;
@@ -39,7 +37,7 @@ mod oauth_utils;
 pub type Result<T> = std::result::Result<T, TheseusSerializableError>;
 
 // // Main returnable Theseus GUI error
-// // Needs to be Serializable to be returned to the JavaScript side
+// // Needs to be Serializable to be returned to JavaScript side
 // #[derive(Error, Debug, Serialize)]
 // pub enum TheseusGuiError {
 //     #[error(transparent)]
