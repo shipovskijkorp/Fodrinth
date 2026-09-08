@@ -6,7 +6,6 @@ import router from '@/routes'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
 const DAY_MS = 24 * 60 * 60 * 1000
-const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
 
 let observer = null
 let scheduled = false
@@ -80,6 +79,11 @@ function curseForgeSeries(snapshot, periodDays) {
 	return found ? values : []
 }
 
+function mergedSeries(left, right) {
+	const size = Math.max(left.length, right.length)
+	return Array.from({ length: size }, (_, index) => (left[index] ?? 0) + (right[index] ?? 0))
+}
+
 function points(values, max) {
 	if (!values.length || max <= 0) return ''
 	const width = 760
@@ -117,39 +121,11 @@ function makeOverlay(className, color, linePoints, fillOpacity) {
 	return svg
 }
 
-function axisLabels(section) {
-	const chartBody = [...section.querySelectorAll('div')].find((element) =>
-		element.classList.contains('grid') && String(element.className).includes('grid-cols-[64px_1fr]'),
-	)
-	if (!chartBody) return []
-	const axis = chartBody.firstElementChild
-	return axis ? [...axis.querySelectorAll('span')].slice(0, 3) : []
-}
-
-function patchAxis(section, max) {
-	const labels = axisLabels(section)
-	if (labels.length < 3) return
-	const desired = [compact.format(max), compact.format(max / 2), '0']
-	labels.forEach((label, index) => {
-		if (!label.dataset.fodrinthOriginalValue) label.dataset.fodrinthOriginalValue = label.textContent
-		if (label.textContent !== desired[index]) label.textContent = desired[index]
-		label.dataset.fodrinthPatchedValue = desired[index]
-	})
-}
-
-function restore(section) {
-	const overlays = section.querySelectorAll('[data-fodrinth-provider-chart]')
+function restore(section = findChartSection()) {
+	if (!section) return
+	section.querySelectorAll('[data-fodrinth-provider-chart]').forEach((element) => element.remove())
 	const native = section.querySelector('svg:not([data-fodrinth-provider-chart])')
-	const wasPatched = !!section.dataset.fodrinthProviderChartFingerprint || overlays.length > 0 || native?.style.display === 'none'
-	if (!wasPatched) return
-
-	overlays.forEach((element) => element.remove())
 	if (native) native.style.display = ''
-	for (const label of axisLabels(section)) {
-		if (label.dataset.fodrinthOriginalValue) label.textContent = label.dataset.fodrinthOriginalValue
-		delete label.dataset.fodrinthOriginalValue
-		delete label.dataset.fodrinthPatchedValue
-	}
 	delete section.dataset.fodrinthProviderChartFingerprint
 }
 
@@ -186,19 +162,22 @@ function patch() {
 		native?.style.display === 'none'
 	) return
 
-	const max = Math.max(...modrinth, ...curseforge, 1)
 	if (!native?.parentElement) return
 	const host = native.parentElement
+	const combined = mergedSeries(modrinth, curseforge)
+	// Analytics.vue still owns the native axis labels. Its Combined series is Modrinth +
+	// CurseForge, so scale both provider overlays against that same maximum and never mutate
+	// Vue-owned axis text. This keeps source/period switching deterministic.
+	const max = Math.max(...combined, ...modrinth, ...curseforge, 1)
+
 	native.style.display = 'none'
 	overlays.forEach((element) => element.remove())
-
 	if (modrinth.length) {
 		host.appendChild(makeOverlay('modrinth', 'var(--color-brand, #1bd96a)', points(modrinth, max), 0.07))
 	}
 	if (curseforge.length) {
 		host.appendChild(makeOverlay('curseforge', '#ff7849', points(curseforge, max), 0.045))
 	}
-	patchAxis(section, max)
 	section.dataset.fodrinthProviderChartFingerprint = nextFingerprint
 }
 
@@ -208,11 +187,29 @@ function schedulePatch() {
 	requestAnimationFrame(patch)
 }
 
+function beforeUiMutation() {
+	if (!isAnalyticsRoute()) return
+	// Restore the Vue-owned SVG before source/period/view controls trigger a render. Otherwise
+	// Vue can patch a node that our helper has hidden from under it and the graph occasionally
+	// stays blank or carries the previous provider after switching.
+	restore()
+	requestAnimationFrame(schedulePatch)
+}
+
 export function initFodrinthAnalyticsProviderChart() {
 	if (observer) return
 	observer = new MutationObserver(schedulePatch)
-	observer.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true })
+	observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+	document.addEventListener('click', beforeUiMutation, true)
+	document.addEventListener('change', beforeUiMutation, true)
+	router.beforeEach(() => {
+		restore()
+		return true
+	})
 	router.afterEach(schedulePatch)
-	window.addEventListener(CREATOR_ANALYTICS_CACHE_UPDATED_EVENT, schedulePatch)
+	window.addEventListener(CREATOR_ANALYTICS_CACHE_UPDATED_EVENT, () => {
+		restore()
+		schedulePatch()
+	})
 	schedulePatch()
 }
