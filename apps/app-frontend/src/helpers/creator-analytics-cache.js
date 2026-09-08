@@ -8,8 +8,8 @@ import { get_user_projects } from '@/helpers/users'
 
 export const CREATOR_ANALYTICS_CACHE_UPDATED_EVENT = 'fodrinth:creator-analytics-cache-updated'
 
-const STORAGE_KEY = 'fodrinth.creator.analytics-cache.v2'
-const CACHE_VERSION = 2
+const STORAGE_KEY = 'fodrinth.creator.analytics-cache.v3'
+const CACHE_VERSION = 3
 const DEFAULT_PERIODS = [30, 90, 7]
 const FRESH_FOR_MS = 15 * 60 * 1000
 const PERIODIC_CHECK_MS = 5 * 60 * 1000
@@ -122,8 +122,16 @@ function isProviderFresh(provider) {
 function isCurseForgeFresh(provider) {
 	if (!isProviderFresh(provider) || provider?.error) return false
 	const analytics = provider?.analytics
-	if (!analytics || analytics.needsLogin || analytics.connected === false) return false
-	return true
+	if (!analytics || analytics.needsLogin || analytics.connected === false || analytics.downloadsError) return false
+	const downloads = analytics.downloads
+	if (!downloads || typeof downloads !== 'object') return false
+	const hasNumber = (value) => value != null && value !== '' && Number.isFinite(Number(value))
+	return (
+		hasNumber(downloads.current) ||
+		hasNumber(downloads.allTime) ||
+		(downloads.series?.length ?? 0) > 0 ||
+		(downloads.projects?.length ?? 0) > 0
+	)
 }
 
 function isPeriodFresh(snapshot) {
