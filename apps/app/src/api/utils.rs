@@ -28,7 +28,7 @@ pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
             super::curseforge_creator_bridge::curseforge_get_author_analytics,
             super::curseforge_creator_bridge::curseforge_get_author_projects,
             super::curseforge_projects_v2::curseforge_get_author_projects_v2,
-            super::curseforge_downloads_v5::curseforge_get_author_downloads,
+            super::curseforge_downloads_v6::curseforge_get_author_downloads,
             super::thumbnails::get_image_thumbnail,
         ])
         .build()
@@ -80,11 +80,11 @@ pub async fn should_disable_mouseover() -> bool {
             && minor >= 3
         {
             // Mac os version is 12.3 or higher, we allow mouseover
-            return false;
+            false
+        } else {
+            true
         }
-        true
     } else {
-        // Not macos, we allow mouseover
         false
     }
 }
@@ -153,20 +153,20 @@ pub async fn get_opening_command(
     return if let Some(payload) = payload.as_ref() {
         tracing::info!("opening command {payload}");
 
-        Ok(Some(handler::parse_command(payload).await?))
+        Ok(Some(handler::parse_command(payload).await))
     } else if let Some(cmd_arg) = cmd_arg {
         tracing::info!("opening command {cmd_arg:?}");
-
-        Ok(Some(handler::parse_command(&cmd_arg).await?))
+        Ok(Some(handler::parse_command(&cmd_arg).await))
     } else {
         Ok(None)
-    };
+    }
+    .and_then(|cmd| cmd.map_or(Ok(None), |value| value.map(Some)))
 }
 
 #[tauri::command]
 #[cfg(not(target_os = "macos"))]
 pub async fn get_opening_command() -> Result<Option<CommandPayload>> {
-    // Tauri is not CLI, we use arguments as path to file to call
+    // We use the second argument as the opening target for non-macOS platforms.
     let cmd_arg = std::env::args_os().nth(1);
 
     tracing::info!("opening command {cmd_arg:?}");
@@ -179,8 +179,6 @@ pub async fn get_opening_command() -> Result<Option<CommandPayload>> {
     Ok(None)
 }
 
-// helper function called when redirected by a weblink (ie: modrith://do-something) or when redirected by a .mrpack file (in which case its a filepath)
-// We hijack the deep link library (which also contains functionality for instance-checking)
 pub async fn handle_command(command: String) -> Result<()> {
     tracing::info!("handle command: {command}");
     Ok(theseus::handler::parse_and_emit_command(&command).await?)
