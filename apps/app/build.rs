@@ -378,6 +378,7 @@ fn main() {
                         "curseforge_get_author_projects",
                         "curseforge_get_author_projects_v2",
                         "curseforge_get_author_downloads",
+                        "curseforge_get_author_downloads_v6",
                         "get_image_thumbnail",
                     ])
                     .default_permission(
