@@ -32,6 +32,12 @@
 					"url": "https://*.nodes.modrinth.com/*"
 				},
 				{
+					"url": "https://minecraft.curseforge.com/*"
+				},
+				{
+					"url": "https://api.curseforge.com/*"
+				},
+				{
 					"url": "https://api.mclo.gs/*"
 				},
 				{
