@@ -4,6 +4,7 @@ use thiserror::Error;
 
 pub mod auth;
 pub mod curseforge_analytics;
+pub mod curseforge_creator_bridge;
 pub mod curseforge_projects;
 pub mod import;
 pub mod install;
@@ -128,7 +129,8 @@ macro_rules! impl_serialize {
     };
 }
 
-// Use the macro to implement Serialize for TheseusSerializableError
+// Use the macro to implement Serialize for each variant of TheseusSerializableError,
+// where the field is the string. (This allows easy extension to errors without many match arms)
 #[cfg(not(feature = "updater"))]
 impl_serialize! {
     IO,
