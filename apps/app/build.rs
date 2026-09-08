@@ -373,6 +373,9 @@ fn main() {
                         "show_app_db_backups_folder",
                         "progress_bars_list",
                         "get_opening_command",
+                        "curseforge_open_author_portal",
+                        "curseforge_get_author_analytics",
+                        "curseforge_get_author_projects",
                         "get_image_thumbnail",
                     ])
                     .default_permission(
