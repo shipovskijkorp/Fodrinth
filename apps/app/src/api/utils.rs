@@ -24,9 +24,9 @@ pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
             show_app_db_backups_folder,
             progress_bars_list,
             get_opening_command,
-            super::curseforge_analytics::curseforge_open_author_portal,
-            super::curseforge_analytics::curseforge_get_author_analytics,
-            super::curseforge_projects::curseforge_get_author_projects,
+            super::curseforge_creator_bridge::curseforge_open_author_portal,
+            super::curseforge_creator_bridge::curseforge_get_author_analytics,
+            super::curseforge_creator_bridge::curseforge_get_author_projects,
             super::thumbnails::get_image_thumbnail,
         ])
         .build()
