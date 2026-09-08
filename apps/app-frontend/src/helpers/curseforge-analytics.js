@@ -9,8 +9,14 @@ export async function openCurseForgeAuthorPortal() {
 }
 
 function finiteOrNull(value) {
+	if (value == null || value === '') return null
 	const number = Number(value)
 	return Number.isFinite(number) ? number : null
+}
+
+function optionalNumber(value) {
+	const number = finiteOrNull(value)
+	return number == null ? undefined : number
 }
 
 function normalizeProject(project) {
@@ -79,6 +85,9 @@ export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
 		freshDownloads = await invoke('plugin:utils|curseforge_get_author_downloads', {
 			periodDays,
 		})
+		if (import.meta.env.DEV && freshDownloads?.debug) {
+			console.info('[Fodrinth] CurseForge download analytics', freshDownloads.debug)
+		}
 	} catch (error) {
 		downloadsError = error instanceof Error ? error.message : String(error)
 	}
@@ -108,13 +117,13 @@ export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
 		: null
 
 	const downloads = {
-		current: finiteOrNull(freshDownloads?.current),
-		previous: finiteOrNull(freshDownloads?.previous),
-		allTime: projectAllTime ?? finiteOrNull(freshDownloads?.allTime),
-		uniqueCurrent: finiteOrNull(freshDownloads?.uniqueCurrent),
-		uniquePrevious: finiteOrNull(freshDownloads?.uniquePrevious),
-		yesterday: finiteOrNull(freshDownloads?.yesterday),
-		yesterdayChangePercent: finiteOrNull(freshDownloads?.yesterdayChangePercent),
+		current: optionalNumber(freshDownloads?.current),
+		previous: optionalNumber(freshDownloads?.previous),
+		allTime: optionalNumber(projectAllTime ?? freshDownloads?.allTime),
+		uniqueCurrent: optionalNumber(freshDownloads?.uniqueCurrent),
+		uniquePrevious: optionalNumber(freshDownloads?.uniquePrevious),
+		yesterday: optionalNumber(freshDownloads?.yesterday),
+		yesterdayChangePercent: optionalNumber(freshDownloads?.yesterdayChangePercent),
 		series: Array.isArray(freshDownloads?.series) ? freshDownloads.series : [],
 		projects,
 		debug: freshDownloads?.debug ?? null,
@@ -128,6 +137,8 @@ export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
 		...base,
 		connected: true,
 		needsLogin: !!freshDownloads?.needsLogin,
+		rewardPoints: optionalNumber(base?.rewardPoints),
+		rewardBalanceUsd: optionalNumber(base?.rewardBalanceUsd),
 		downloads,
 		downloadsError: downloadsError || null,
 	}
