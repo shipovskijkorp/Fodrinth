@@ -1,4 +1,4 @@
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::time::Duration;
 use tauri::{AppHandle, LogicalPosition, Manager, Runtime, WebviewWindow};
 
@@ -74,6 +74,50 @@ async fn poll_augmented_result<R: Runtime>(window: &WebviewWindow<R>) -> Result<
 	Err("Timed out mapping CurseForge period analytics to projects".to_string())
 }
 
+fn zero_lifetime_project(project: &Value) -> bool {
+	project
+		.get("allTime")
+		.and_then(Value::as_f64)
+		.is_some_and(|value| value == 0.0)
+}
+
+fn append_zero_period_projects(result: &mut Value, known_projects: &Value) {
+	let Some(known) = known_projects.as_array() else {
+		return;
+	};
+	let Some(object) = result.as_object_mut() else {
+		return;
+	};
+	let projects = object.entry("projects").or_insert_with(|| Value::Array(Vec::new()));
+	let Some(projects) = projects.as_array_mut() else {
+		return;
+	};
+
+	for project in known.iter().filter(|project| zero_lifetime_project(project)) {
+		let id = project.get("id").and_then(Value::as_str).unwrap_or_default();
+		let name = project
+			.get("name")
+			.and_then(Value::as_str)
+			.filter(|value| !value.is_empty())
+			.unwrap_or(id);
+		if id.is_empty() && name.is_empty() {
+			continue;
+		}
+		let exists = projects.iter().any(|candidate| {
+			candidate.get("id").and_then(Value::as_str) == Some(id)
+				|| candidate.get("name").and_then(Value::as_str) == Some(name)
+		});
+		if !exists {
+			projects.push(json!({
+				"id": if id.is_empty() { name } else { id },
+				"name": name,
+				"period": 0,
+				"current": 0,
+			}));
+		}
+	}
+}
+
 #[tauri::command]
 pub async fn curseforge_get_author_downloads_v6<R: Runtime>(
 	app: AppHandle<R>,
@@ -93,12 +137,29 @@ pub async fn curseforge_get_author_downloads_v6<R: Runtime>(
 		return Ok(base);
 	}
 
+	let mapping_projects = Value::Array(
+		known_projects
+			.as_array()
+			.into_iter()
+			.flatten()
+			.filter(|project| !zero_lifetime_project(project))
+			.cloned()
+			.collect(),
+	);
+	let mapping_count = mapping_projects.as_array().map_or(0, Vec::len);
+	if mapping_count == 0 {
+		let mut result = base;
+		append_zero_period_projects(&mut result, &known_projects);
+		if let Some(object) = result.as_object_mut() {
+			object.insert("current".to_string(), Value::from(0));
+		}
+		return Ok(result);
+	}
+
 	let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
 		return Ok(base);
 	};
 
-	// WebView2 can suspend lazy chart layout in a completely hidden window. Keep the Authors
-	// dashboard rendered off-screen while the mapper reads the period charts.
 	let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
 	let _ = window.set_skip_taskbar(true);
 	let _ = window.show();
@@ -120,7 +181,7 @@ pub async fn curseforge_get_author_downloads_v6<R: Runtime>(
 	tokio::time::sleep(Duration::from_millis(1200)).await;
 
 	let base_json = serde_json::to_string(&base).map_err(|error| error.to_string())?;
-	let known_json = serde_json::to_string(&known_projects).map_err(|error| error.to_string())?;
+	let known_json = serde_json::to_string(&mapping_projects).map_err(|error| error.to_string())?;
 	window
 		.eval(format!(
 			"window.__FODRINTH_CF_DOWNLOAD_V3_RESULT__ = {base_json}; window.__FODRINTH_CF_DOWNLOAD_PROJECTS_AUGMENTED__ = false;"
@@ -134,7 +195,8 @@ pub async fn curseforge_get_author_downloads_v6<R: Runtime>(
 		.eval(script)
 		.map_err(|error| format!("Could not start CurseForge project analytics mapper: {error}"))?;
 
-	let result = poll_augmented_result(&window).await.unwrap_or(base);
+	let mut result = poll_augmented_result(&window).await.unwrap_or(base);
+	append_zero_period_projects(&mut result, &known_projects);
 	let _ = window.hide();
 	Ok(result)
 }
