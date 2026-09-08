@@ -1,0 +1,398 @@
+import { invoke } from '@tauri-apps/api/core'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
+
+import { config } from '@/config'
+import { getCurseForgeAuthorAnalytics } from '@/helpers/curseforge-analytics.js'
+import { get as getModrinthCredentials } from '@/helpers/mr_auth.ts'
+import { get_user_projects } from '@/helpers/users'
+
+export const CREATOR_ANALYTICS_CACHE_UPDATED_EVENT = 'fodrinth:creator-analytics-cache-updated'
+
+const STORAGE_KEY = 'fodrinth.creator.analytics-cache.v1'
+const CACHE_VERSION = 1
+const DEFAULT_PERIODS = [30, 7, 90]
+const FRESH_FOR_MS = 15 * 60 * 1000
+const PERIODIC_CHECK_MS = 5 * 60 * 1000
+const LOW_LOAD_INTERACTION_MS = 12 * 1000
+const STARTUP_DELAY_MS = 1200
+
+const refreshes = new Map()
+let curseForgeQueue = Promise.resolve()
+let backgroundStarted = false
+let periodicTimer = null
+let lastInteractionAt = Date.now()
+let startupWarmupFinished = false
+
+function blankRoot() {
+	return {
+		version: CACHE_VERSION,
+		periods: {},
+	}
+}
+
+function readRoot() {
+	try {
+		const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null')
+		if (!parsed || parsed.version !== CACHE_VERSION || typeof parsed.periods !== 'object') return blankRoot()
+		return parsed
+	} catch {
+		return blankRoot()
+	}
+}
+
+function writeRoot(root) {
+	try {
+		localStorage.setItem(STORAGE_KEY, JSON.stringify(root))
+	} catch (error) {
+		console.warn('[Fodrinth] Could not persist creator analytics cache', error)
+	}
+}
+
+function normalizePeriod(periodDays) {
+	const days = Number(periodDays)
+	return Number.isFinite(days) ? Math.max(1, Math.min(365, Math.round(days))) : 30
+}
+
+function clone(value) {
+	if (value == null) return value
+	try {
+		return structuredClone(value)
+	} catch {
+		try {
+			return JSON.parse(JSON.stringify(value))
+		} catch {
+			return value
+		}
+	}
+}
+
+function emptySnapshot(periodDays) {
+	return {
+		periodDays,
+		updatedAt: null,
+		modrinth: null,
+		curseforge: null,
+	}
+}
+
+export function getCreatorAnalyticsSnapshot(periodDays = 30) {
+	const days = normalizePeriod(periodDays)
+	const root = readRoot()
+	const cached = root.periods[String(days)]
+	if (!cached) return emptySnapshot(days)
+	return clone({
+		periodDays: days,
+		updatedAt: cached.updatedAt ?? null,
+		modrinth: cached.modrinth ?? null,
+		curseforge: cached.curseforge ?? null,
+	})
+}
+
+function persistPeriod(periodDays, patch) {
+	const days = normalizePeriod(periodDays)
+	const root = readRoot()
+	const old = root.periods[String(days)] ?? {}
+	const next = {
+		...old,
+		...patch,
+		periodDays: days,
+		updatedAt: Date.now(),
+	}
+	root.periods[String(days)] = next
+	writeRoot(root)
+	window.dispatchEvent(
+		new CustomEvent(CREATOR_ANALYTICS_CACHE_UPDATED_EVENT, {
+			detail: { periodDays: days, updatedAt: next.updatedAt },
+		}),
+	)
+	return clone(next)
+}
+
+function providerAge(provider) {
+	const updatedAt = Number(provider?.updatedAt)
+	return Number.isFinite(updatedAt) ? Math.max(0, Date.now() - updatedAt) : Infinity
+}
+
+function isPeriodFresh(snapshot) {
+	const providers = [snapshot?.modrinth, snapshot?.curseforge].filter(Boolean)
+	return providers.length > 0 && providers.every((provider) => providerAge(provider) < FRESH_FOR_MS)
+}
+
+async function fetchJson(url, session, options = {}) {
+	const response = await tauriFetch(url, {
+		...options,
+		headers: {
+			Accept: 'application/json',
+			...(options.body ? { 'Content-Type': 'application/json' } : {}),
+			Authorization: `Bearer ${session}`,
+			...(options.headers ?? {}),
+		},
+	})
+	if (!response.ok) {
+		let detail = ''
+		try {
+			const body = await response.text()
+			detail = body ? `: ${body.slice(0, 400)}` : ''
+		} catch {}
+		throw new Error(`HTTP ${response.status} ${response.statusText}${detail}`)
+	}
+	if (response.status === 204 || response.status === 205) return null
+	return await response.json()
+}
+
+function normalizePayoutBalance(balance) {
+	if (!balance || typeof balance !== 'object') return balance ?? null
+	return {
+		...balance,
+		available: Number(balance.available) || 0,
+		withdrawn_lifetime: Number(balance.withdrawn_lifetime) || 0,
+		withdrawn_ytd: Number(balance.withdrawn_ytd) || 0,
+		pending: Number(balance.pending) || 0,
+		dates: Object.fromEntries(
+			Object.entries(balance.dates ?? {}).map(([date, amount]) => [date, Number(amount) || 0]),
+		),
+	}
+}
+
+function normalizePayoutHistory(history) {
+	return (Array.isArray(history) ? history : []).map((transaction) => ({
+		...transaction,
+		amount: Number(transaction?.amount) || 0,
+		...(transaction?.fee == null ? {} : { fee: Number(transaction.fee) || 0 }),
+	}))
+}
+
+async function fetchModrinthAnalytics(periodDays) {
+	const attemptedAt = Date.now()
+	const credentials = await getModrinthCredentials()
+	if (!credentials?.user_id || !credentials?.session) {
+		return {
+			updatedAt: attemptedAt,
+			lastAttemptAt: attemptedAt,
+			authenticated: false,
+			userId: null,
+			projects: [],
+			analyticsResponse: null,
+			payoutBalance: null,
+			payoutHistory: [],
+			error: null,
+		}
+	}
+
+	const projects = await get_user_projects(credentials.user_id)
+	const projectIds = projects.map((project) => project?.id).filter(Boolean)
+	let analyticsResponse = null
+	let payoutBalance = null
+	let payoutHistory = []
+	let analyticsError = null
+	let payoutError = null
+
+	if (projectIds.length > 0) {
+		const end = new Date()
+		const start = new Date(end.getTime() - periodDays * 2 * 24 * 60 * 60 * 1000)
+		const request = {
+			time_range: {
+				start: start.toISOString(),
+				end: end.toISOString(),
+				resolution: { slices: periodDays * 2 },
+			},
+			project_ids: projectIds,
+			return_metrics: {
+				project_downloads: { bucket_by: ['project_id'] },
+				project_revenue: { bucket_by: ['project_id'] },
+			},
+		}
+
+		const [analytics, balance, history] = await Promise.allSettled([
+			fetchJson(`${config.labrinthBaseUrl}/v3/analytics`, credentials.session, {
+				method: 'POST',
+				body: JSON.stringify(request),
+			}),
+			fetchJson(`${config.labrinthBaseUrl}/v3/payout/balance`, credentials.session),
+			fetchJson(`${config.labrinthBaseUrl}/v3/payout/history`, credentials.session),
+		])
+
+		if (analytics.status === 'fulfilled') analyticsResponse = analytics.value
+		else analyticsError = analytics.reason
+		if (balance.status === 'fulfilled') payoutBalance = normalizePayoutBalance(balance.value)
+		else payoutError = balance.reason
+		if (history.status === 'fulfilled') payoutHistory = normalizePayoutHistory(history.value)
+		else payoutError = payoutError ?? history.reason
+	}
+
+	if (analyticsError) throw analyticsError
+
+	return {
+		updatedAt: Date.now(),
+		lastAttemptAt: attemptedAt,
+		authenticated: true,
+		userId: credentials.user_id,
+		projects,
+		analyticsResponse,
+		payoutBalance,
+		payoutHistory,
+		error: payoutError ? `Payout data: ${payoutError instanceof Error ? payoutError.message : String(payoutError)}` : null,
+	}
+}
+
+function enqueueCurseForge(periodDays) {
+	const job = curseForgeQueue
+		.catch(() => undefined)
+		.then(async () => {
+			const attemptedAt = Date.now()
+			const analytics = await getCurseForgeAuthorAnalytics(periodDays)
+			return {
+				updatedAt: Date.now(),
+				lastAttemptAt: attemptedAt,
+				analytics,
+				error: null,
+			}
+		})
+	curseForgeQueue = job
+	return job
+}
+
+function errorMessage(error) {
+	return error instanceof Error ? error.message : String(error)
+}
+
+export async function refreshCreatorAnalyticsPeriod(periodDays = 30, { force = false } = {}) {
+	const days = normalizePeriod(periodDays)
+	const existingPromise = refreshes.get(days)
+	if (existingPromise) return await existingPromise
+
+	const cached = getCreatorAnalyticsSnapshot(days)
+	if (!force && isPeriodFresh(cached)) return cached
+
+	const promise = (async () => {
+		const old = getCreatorAnalyticsSnapshot(days)
+		const [modrinthResult, curseForgeResult] = await Promise.allSettled([
+			fetchModrinthAnalytics(days),
+			enqueueCurseForge(days),
+		])
+
+		const modrinth = modrinthResult.status === 'fulfilled'
+			? modrinthResult.value
+			: {
+				...(old.modrinth ?? {}),
+				lastAttemptAt: Date.now(),
+				error: errorMessage(modrinthResult.reason),
+			}
+		const curseforge = curseForgeResult.status === 'fulfilled'
+			? curseForgeResult.value
+			: {
+				...(old.curseforge ?? {}),
+				lastAttemptAt: Date.now(),
+				error: errorMessage(curseForgeResult.reason),
+			}
+
+		persistPeriod(days, { modrinth, curseforge })
+		return getCreatorAnalyticsSnapshot(days)
+	})()
+
+	refreshes.set(days, promise)
+	try {
+		return await promise
+	} finally {
+		if (refreshes.get(days) === promise) refreshes.delete(days)
+	}
+}
+
+async function hasActiveInstallJobs() {
+	try {
+		const jobs = await invoke('plugin:install|install_job_list', { includeFinished: false })
+		return Array.isArray(jobs) && jobs.some((job) => job?.status === 'queued' || job?.status === 'running')
+	} catch {
+		return false
+	}
+}
+
+function runWhenBrowserIdle(callback, timeout = 5000) {
+	if (typeof window.requestIdleCallback === 'function') {
+		window.requestIdleCallback(() => void callback(), { timeout })
+	} else {
+		setTimeout(() => void callback(), Math.min(timeout, 1500))
+	}
+}
+
+async function lowLoadEnough({ ignoreInteraction = false } = {}) {
+	if (!navigator.onLine) return false
+	if (await hasActiveInstallJobs()) return false
+	if (!ignoreInteraction && document.visibilityState === 'visible' && Date.now() - lastInteractionAt < LOW_LOAD_INTERACTION_MS) return false
+	return true
+}
+
+async function warmPeriod(periodDays, options = {}) {
+	if (!(await lowLoadEnough(options))) return false
+	try {
+		await refreshCreatorAnalyticsPeriod(periodDays, { force: false })
+		return true
+	} catch (error) {
+		if (import.meta.env.DEV) console.debug(`[Fodrinth] Background analytics ${periodDays}d refresh failed`, error)
+		return false
+	}
+}
+
+function scheduleWarmPeriod(periodDays, delay, options = {}) {
+	setTimeout(() => {
+		runWhenBrowserIdle(async () => {
+			const warmed = await warmPeriod(periodDays, options)
+			if (!warmed) scheduleWarmPeriod(periodDays, Math.max(15_000, delay), options)
+		}, 6000)
+	}, delay)
+}
+
+async function refreshOneStalePeriod() {
+	if (!(await lowLoadEnough())) return
+	const candidates = DEFAULT_PERIODS
+		.map((periodDays) => ({ periodDays, snapshot: getCreatorAnalyticsSnapshot(periodDays) }))
+		.map((item) => ({
+			...item,
+			age: Math.min(providerAge(item.snapshot.modrinth), providerAge(item.snapshot.curseforge)),
+		}))
+		.filter((item) => !isPeriodFresh(item.snapshot))
+		.sort((a, b) => b.age - a.age)
+	if (candidates.length === 0) return
+	await warmPeriod(candidates[0].periodDays)
+}
+
+function noteInteraction() {
+	lastInteractionAt = Date.now()
+}
+
+export function startCreatorAnalyticsBackground() {
+	if (backgroundStarted) return
+	backgroundStarted = true
+
+	for (const event of ['pointerdown', 'keydown', 'wheel', 'touchstart']) {
+		window.addEventListener(event, noteInteraction, { passive: true })
+	}
+
+	// Warm the default 30-day view shortly after the UI mounts. The promise is deliberately
+	// detached from application startup, and install jobs are checked before any network work.
+	scheduleWarmPeriod(30, STARTUP_DELAY_MS, { ignoreInteraction: true })
+	scheduleWarmPeriod(7, 18_000)
+	scheduleWarmPeriod(90, 36_000)
+
+	periodicTimer = window.setInterval(() => {
+		runWhenBrowserIdle(refreshOneStalePeriod, 8000)
+	}, PERIODIC_CHECK_MS)
+
+	window.addEventListener('online', () => runWhenBrowserIdle(refreshOneStalePeriod, 5000))
+	document.addEventListener('visibilitychange', () => {
+		if (document.visibilityState === 'hidden') runWhenBrowserIdle(refreshOneStalePeriod, 4000)
+	})
+
+	startupWarmupFinished = true
+}
+
+export function isCreatorAnalyticsBackgroundStarted() {
+	return backgroundStarted && startupWarmupFinished
+}
+
+export function stopCreatorAnalyticsBackgroundForTests() {
+	if (periodicTimer != null) clearInterval(periodicTimer)
+	periodicTimer = null
+	backgroundStarted = false
+	startupWarmupFinished = false
+}
