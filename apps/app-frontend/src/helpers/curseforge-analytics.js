@@ -128,13 +128,18 @@ export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
 		projectsConnected = response?.connected !== false
 		projectsNeedLogin = !!response?.needsLogin
 		authorProjects = Array.isArray(response?.projects) ? response.projects : []
+		if (response?.error && authorProjects.length === 0) {
+			const message = String(response.error)
+			downloadsError = downloadsError ? `${downloadsError}; projects: ${message}` : `projects: ${message}`
+		}
 	} catch (error) {
 		const message = errorText(error)
 		downloadsError = downloadsError ? `${downloadsError}; projects: ${message}` : `projects: ${message}`
 	}
 
+	const freshDownloadsHealthy = hasDownloadPayload(freshDownloads) && !freshDownloads?.error
 	const fallbackDownloads = base?.downloads && typeof base.downloads === 'object' ? base.downloads : null
-	const primaryDownloads = hasDownloadPayload(freshDownloads) ? freshDownloads : fallbackDownloads
+	const primaryDownloads = freshDownloadsHealthy ? freshDownloads : fallbackDownloads
 	const projectSources = [
 		...(Array.isArray(fallbackDownloads?.projects) ? fallbackDownloads.projects : []),
 		...(Array.isArray(freshDownloads?.projects) ? freshDownloads.projects : []),
@@ -164,9 +169,17 @@ export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
 		debug: freshDownloads?.debug ?? fallbackDownloads?.debug ?? null,
 	}
 
-	for (const error of [freshDownloads?.error, fallbackDownloads?.error, base?.downloadsError]) {
-		if (!error) continue
-		downloadsError = downloadsError ? `${downloadsError}; ${String(error)}` : String(error)
+	if (freshDownloads?.error) {
+		downloadsError = downloadsError ? `${downloadsError}; ${String(freshDownloads.error)}` : String(freshDownloads.error)
+	}
+	// The legacy combined reader still scrapes the dashboard with Tauri's callback-based
+	// evaluator. Once the dedicated download reader succeeds, ignore legacy dashboard errors
+	// so a healthy result is not marked stale just because the fallback transport failed.
+	if (!freshDownloadsHealthy) {
+		for (const error of [fallbackDownloads?.error, base?.downloadsError]) {
+			if (!error) continue
+			downloadsError = downloadsError ? `${downloadsError}; ${String(error)}` : String(error)
+		}
 	}
 
 	const hasDownloads = hasDownloadPayload(downloads)
