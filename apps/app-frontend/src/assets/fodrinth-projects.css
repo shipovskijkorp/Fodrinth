@@ -1,0 +1,269 @@
+.fodrinth-projects-page {
+	--fodrinth-project-accent: var(--color-brand);
+}
+
+.fodrinth-projects-page > div:nth-of-type(1) {
+	border-color: var(--color-surface-5) !important;
+	background: var(--color-surface-2) !important;
+}
+
+.fodrinth-projects-page .filter-button {
+	border: 1px solid transparent !important;
+	border-radius: 0.65rem !important;
+	padding: 0.42rem 0.72rem !important;
+	color: var(--color-secondary) !important;
+}
+
+.fodrinth-projects-page .filter-button:hover {
+	background: var(--color-surface-4) !important;
+	color: var(--color-primary) !important;
+}
+
+.fodrinth-projects-page .filter-button.active {
+	border-color: color-mix(in srgb, var(--color-brand) 42%, var(--color-surface-5)) !important;
+	background: var(--color-brand-highlight) !important;
+	color: var(--color-contrast) !important;
+}
+
+.fodrinth-projects-page .filter-count {
+	min-width: 1.35rem;
+	background: var(--color-surface-4) !important;
+	color: var(--color-secondary);
+	text-align: center;
+}
+
+.fodrinth-projects-page .filter-button.active .filter-count {
+	background: color-mix(in srgb, var(--color-brand) 22%, var(--color-surface-3)) !important;
+	color: var(--color-contrast);
+}
+
+.fodrinth-projects-page .project-input {
+	border-color: var(--color-surface-5) !important;
+	border-radius: 0.65rem !important;
+	background: var(--color-surface-2) !important;
+}
+
+.fodrinth-projects-page .project-input:focus {
+	border-color: color-mix(in srgb, var(--color-brand) 65%, var(--color-surface-5)) !important;
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-brand) 14%, transparent);
+}
+
+.fodrinth-project-toolbar-row {
+	grid-template-columns: minmax(0, 1fr) 14rem auto !important;
+	align-items: stretch;
+}
+
+.fodrinth-project-layout-picker {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.2rem;
+	align-self: stretch;
+	border: 1px solid var(--color-surface-5);
+	border-radius: 0.65rem;
+	background: var(--color-surface-2);
+	padding: 0.22rem;
+}
+
+.fodrinth-project-layout-button {
+	display: inline-flex;
+	width: 2.35rem;
+	min-width: 2.35rem;
+	height: 100%;
+	min-height: 2rem;
+	align-items: center;
+	justify-content: center;
+	border: 1px solid transparent;
+	border-radius: 0.48rem;
+	background: transparent;
+	color: var(--color-secondary);
+	cursor: pointer;
+	transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.fodrinth-project-layout-button:hover {
+	background: var(--color-surface-4);
+	color: var(--color-primary);
+}
+
+.fodrinth-project-layout-button.is-active {
+	border-color: color-mix(in srgb, var(--color-brand) 40%, var(--color-surface-5));
+	background: var(--color-brand-highlight);
+	color: var(--color-contrast);
+}
+
+.fodrinth-project-layout-button svg {
+	width: 1rem;
+	height: 1rem;
+}
+
+.fodrinth-projects-page .project-grid {
+	gap: 0.9rem !important;
+}
+
+.fodrinth-projects-page .project-grid.fodrinth-layout-1 {
+	grid-template-columns: minmax(0, 1fr) !important;
+}
+
+.fodrinth-projects-page .project-grid.fodrinth-layout-2 {
+	grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+
+.fodrinth-projects-page .project-grid.fodrinth-layout-3 {
+	grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+}
+
+.fodrinth-projects-page .project-card {
+	--fodrinth-card-accent: var(--color-brand);
+	position: relative;
+	overflow: hidden;
+	border: 1px solid color-mix(in srgb, var(--fodrinth-card-accent) 42%, var(--color-surface-5)) !important;
+	border-radius: 0.9rem !important;
+	background: var(--color-surface-3) !important;
+	box-shadow:
+		inset 0 3px 0 color-mix(in srgb, var(--fodrinth-card-accent) 88%, transparent),
+		0 1px 0 rgb(255 255 255 / 2%);
+	transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease, transform 120ms ease !important;
+}
+
+.fodrinth-projects-page .project-card:has(.provider-modrinth):not(:has(.provider-curseforge)) {
+	--fodrinth-card-accent: #1bd96a;
+}
+
+.fodrinth-projects-page .project-card:has(.provider-curseforge):not(:has(.provider-modrinth)) {
+	--fodrinth-card-accent: #f16436;
+}
+
+.fodrinth-projects-page .project-card:has(.provider-modrinth):has(.provider-curseforge) {
+	--fodrinth-card-accent: var(--color-brand);
+}
+
+.fodrinth-projects-page .project-card:hover {
+	border-color: color-mix(in srgb, var(--fodrinth-card-accent) 72%, var(--color-surface-5)) !important;
+	background: color-mix(in srgb, var(--color-surface-3) 96%, var(--fodrinth-card-accent)) !important;
+	box-shadow:
+		inset 0 3px 0 var(--fodrinth-card-accent),
+		0 8px 24px rgb(0 0 0 / 10%);
+	transform: translateY(-1px) !important;
+}
+
+.fodrinth-projects-page .project-image {
+	border: 1px solid color-mix(in srgb, var(--fodrinth-card-accent) 28%, var(--color-surface-5));
+	border-radius: 0.75rem !important;
+	background: var(--color-surface-2) !important;
+}
+
+.fodrinth-projects-page .provider-corner {
+	top: 0.82rem !important;
+	right: 0.82rem !important;
+}
+
+.fodrinth-projects-page .provider-badge {
+	width: 1.9rem !important;
+	height: 1.9rem !important;
+	border: 1px solid currentColor !important;
+	border-radius: 0.58rem !important;
+	box-shadow: none !important;
+}
+
+.fodrinth-projects-page .provider-modrinth {
+	background: color-mix(in srgb, #1bd96a 11%, var(--color-surface-2)) !important;
+	color: #1bd96a !important;
+}
+
+.fodrinth-projects-page .provider-curseforge {
+	background: color-mix(in srgb, #f16436 11%, var(--color-surface-2)) !important;
+	color: #f16436 !important;
+}
+
+.fodrinth-projects-page .synced-chip {
+	border-color: color-mix(in srgb, var(--color-brand) 48%, var(--color-surface-5)) !important;
+	background: var(--color-brand-highlight) !important;
+	color: var(--color-contrast) !important;
+	text-transform: none !important;
+	letter-spacing: 0 !important;
+}
+
+.fodrinth-projects-page .provider-lines {
+	border-top-color: color-mix(in srgb, var(--fodrinth-card-accent) 20%, var(--color-surface-4)) !important;
+}
+
+.fodrinth-projects-page .provider-line code {
+	border-radius: 0.38rem;
+	background: var(--color-surface-2);
+	padding: 0.12rem 0.38rem;
+	color: var(--color-secondary);
+}
+
+.fodrinth-projects-page .project-button {
+	border-radius: 0.55rem !important;
+}
+
+.fodrinth-projects-page .project-card .project-button.primary {
+	border-color: color-mix(in srgb, var(--fodrinth-card-accent) 65%, var(--color-surface-5)) !important;
+	background: color-mix(in srgb, var(--fodrinth-card-accent) 78%, var(--color-surface-2)) !important;
+	color: white !important;
+}
+
+.fodrinth-projects-page .project-card .project-button.secondary {
+	border-color: var(--color-surface-5) !important;
+	background: var(--color-surface-2) !important;
+	color: var(--color-primary) !important;
+}
+
+.fodrinth-projects-page .project-card .project-button.secondary:hover,
+.fodrinth-projects-page .project-card .project-button.subtle:hover {
+	border-color: color-mix(in srgb, var(--fodrinth-card-accent) 44%, var(--color-surface-5)) !important;
+	background: color-mix(in srgb, var(--fodrinth-card-accent) 8%, var(--color-surface-2)) !important;
+}
+
+.fodrinth-projects-page .project-grid.fodrinth-layout-1 .project-card {
+	min-height: 0 !important;
+}
+
+.fodrinth-projects-page .project-grid.fodrinth-layout-1 .project-card-main {
+	max-width: calc(100% - 9rem);
+}
+
+.fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-card {
+	min-height: 0 !important;
+	aspect-ratio: 1 / 1;
+}
+
+.fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-image {
+	width: 4rem !important;
+	height: 4rem !important;
+}
+
+.fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-summary {
+	-webkit-line-clamp: 3 !important;
+}
+
+@media (max-width: 1100px) {
+	.fodrinth-projects-page .project-grid.fodrinth-layout-3 {
+		grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+	}
+
+	.fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-card {
+		aspect-ratio: auto;
+		min-height: 220px !important;
+	}
+}
+
+@media (max-width: 760px) {
+	.fodrinth-project-toolbar-row {
+		grid-template-columns: minmax(0, 1fr) !important;
+	}
+
+	.fodrinth-project-layout-picker {
+		width: max-content;
+	}
+
+	.fodrinth-projects-page .project-grid.fodrinth-layout-2,
+	.fodrinth-projects-page .project-grid.fodrinth-layout-3 {
+		grid-template-columns: minmax(0, 1fr) !important;
+	}
+
+	.fodrinth-projects-page .project-grid.fodrinth-layout-3 .project-card {
+		aspect-ratio: auto;
+	}
+}
