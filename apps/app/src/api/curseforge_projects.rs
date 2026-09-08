@@ -53,6 +53,8 @@ const PROJECTS_SCRAPER: &str = r###"
       sourceUrl: norm(candidate.sourceUrl) || previous.sourceUrl || null,
       issuesUrl: norm(candidate.issuesUrl) || previous.issuesUrl || null,
       license: norm(candidate.license) || previous.license || null,
+      dateCreated: norm(candidate.dateCreated) || previous.dateCreated || null,
+      dateModified: norm(candidate.dateModified) || previous.dateModified || null,
       url:
         norm(candidate.url) ||
         previous.url ||
@@ -117,6 +119,13 @@ const PROJECTS_SCRAPER: &str = r###"
     const sourceUrl = readString(value, ['sourceUrl', 'sourceURL', 'source_url', 'sourceCodeUrl', 'repositoryUrl']);
     const issuesUrl = readString(value, ['issueTrackerUrl', 'issuesUrl', 'issuesURL', 'issues_url']);
     const license = readString(value, ['license', 'licenseName', 'license_name']);
+    const dateCreated = readString(value, [
+      'dateCreated', 'date_created', 'createdAt', 'created_at', 'created', 'published',
+    ]);
+    const dateModified = readString(value, [
+      'dateModified', 'date_modified', 'modifiedAt', 'modified_at', 'updatedAt', 'updated_at',
+      'updated', 'lastUpdated', 'last_updated', 'dateReleased', 'date_released', 'latestFileDate',
+    ]);
     const icon = readImage(value);
 
     let score = 0;
@@ -144,6 +153,8 @@ const PROJECTS_SCRAPER: &str = r###"
         sourceUrl,
         issuesUrl,
         license,
+        dateCreated,
+        dateModified,
       });
     }
 
