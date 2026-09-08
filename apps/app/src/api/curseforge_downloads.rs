@@ -152,6 +152,11 @@ pub async fn curseforge_get_author_downloads<R: Runtime>(
     // The React fiber tree on the Authors dashboard is enormous. Walking it can block the
     // WebView2 JS thread for longer than the entire analytics timeout. Network captures and
     // the rendered chart are enough, so keep the scraper bounded and observable.
+    //
+    // 90-day dashboard payloads are substantially larger than 7/30-day payloads. The generic
+    // recursive candidate finder can both become expensive and mistake a single project line
+    // for the global line. For 90d we therefore use a bounded project-aware pass over captured
+    // JSON, aggregate project/day rows for the overall chart, and return period totals per mod.
     let script = DOWNLOAD_SCRAPER
         .replace("__PERIOD_DAYS__", &period_days.to_string())
         .replace(
@@ -175,12 +180,137 @@ pub async fn curseforge_get_author_downloads<R: Runtime>(
             "window.__FODRINTH_CF_DOWNLOAD_STAGE__ = 'parse-captures'; const allCaptured = captures(); const relevantCaptured = allCaptured.filter((capture) => /download|stat|analytic|metric|chart/i.test(capture.url)); const captured = (relevantCaptured.length ? relevantCaptured : allCaptured).slice(-80);",
         )
         .replace(
-            "const reactPropsInspected = inspectReactChartProps();",
-            "const reactPropsInspected = 0;",
+            r#"    for (const capture of captured) visit(capture.value, capture.url, 0);
+    const reactPropsInspected = inspectReactChartProps();"#,
+            r#"    const focusedProjectPeriods = [];
+    if (periodDays === 90) {
+      const projectDays = new Map();
+      const projectNames = new Map();
+      const seenFocused = new WeakSet();
+      const genericSeriesName = /^(?:total|unique|downloads?|total downloads|unique downloads|all projects|minecraft|minecraft java)$/i;
+
+      const rememberFocusedPoint = (projectId, projectName, dateValue, amountValue, context) => {
+        if (/unique/i.test(context || '')) return;
+        const date = toDate(dateValue);
+        const day = dayKey(date);
+        const amount = toNumber(amountValue);
+        const id = norm(projectId || projectName);
+        if (!id || !day || amount == null || amount < 0) return;
+        if (projectName) projectNames.set(id, norm(projectName));
+        const key = `${id}\u0000${day}`;
+        const old = projectDays.get(key);
+        if (old == null || amount > old) projectDays.set(key, amount);
+      };
+
+      const scanFocusedProjectData = (value, inherited = {}, depth = 0, context = '') => {
+        if (depth > 10 || value == null || typeof value === 'function') return;
+        if (typeof value === 'object') {
+          if (seenFocused.has(value)) return;
+          seenFocused.add(value);
+        }
+        if (Array.isArray(value)) {
+          for (const child of value) scanFocusedProjectData(child, inherited, depth + 1, context);
+          return;
+        }
+        if (typeof value !== 'object') return;
+
+        const projectObject = value.project && typeof value.project === 'object' ? value.project : null;
+        let projectId = norm(
+          value.projectId ?? value.project_id ?? value.sourceProject ?? value.source_project ??
+          projectObject?.id ?? projectObject?.projectId ?? inherited.id ?? '',
+        );
+        let projectName = norm(
+          value.projectName ?? value.project_name ?? projectObject?.name ?? projectObject?.title ??
+          inherited.name ?? '',
+        );
+
+        const pointArray = Array.isArray(value.data) ? value.data
+          : Array.isArray(value.values) ? value.values
+            : Array.isArray(value.points) ? value.points
+              : null;
+        const seriesLabel = norm(value.seriesName ?? value.label ?? value.name ?? value.title ?? '');
+        if (!projectName && pointArray && seriesLabel && !genericSeriesName.test(seriesLabel)) {
+          projectName = seriesLabel;
+        }
+        if (!projectId && projectName) projectId = projectName;
+
+        const localContext = `${context} ${seriesLabel}`.trim();
+        const dateValue = value.date ?? value.day ?? value.time ?? value.timestamp ?? value.bucket ?? value.x;
+        const amountValue =
+          value.totalDownloads ?? value.total_downloads ?? value.downloads ?? value.downloadCount ??
+          value.download_count ?? value.total ?? value.count ?? value.y ?? value.value;
+        if (projectId && dateValue != null && amountValue != null) {
+          rememberFocusedPoint(projectId, projectName, dateValue, amountValue, localContext);
+        }
+
+        const dateValues = Array.isArray(value.dates) ? value.dates
+          : Array.isArray(value.days) ? value.days
+            : Array.isArray(value.labels) ? value.labels
+              : Array.isArray(value.categories) ? value.categories
+                : null;
+        const totalValues = Array.isArray(value.downloads) ? value.downloads
+          : Array.isArray(value.totalDownloads) ? value.totalDownloads
+            : Array.isArray(value.totals) ? value.totals
+              : Array.isArray(value.values) && !/unique/i.test(localContext) ? value.values
+                : null;
+        if (projectId && dateValues && totalValues && dateValues.length === totalValues.length) {
+          for (let index = 0; index < dateValues.length; index++) {
+            rememberFocusedPoint(projectId, projectName, dateValues[index], totalValues[index], localContext);
+          }
+        }
+
+        const nextInherited = { id: projectId || inherited.id, name: projectName || inherited.name };
+        for (const [key, child] of Object.entries(value)) {
+          if (child == null || typeof child !== 'object') continue;
+          scanFocusedProjectData(child, nextInherited, depth + 1, `${localContext}.${key}`);
+        }
+      };
+
+      for (const capture of captured) {
+        scanFocusedProjectData(capture.value, {}, 0, capture.url || 'capture');
+      }
+
+      const currentStart90 = Date.now() - periodDays * DAY;
+      const perProject = new Map();
+      const perDay = new Map();
+      for (const [key, value] of projectDays) {
+        const separator = key.indexOf('\u0000');
+        if (separator < 0) continue;
+        const id = key.slice(0, separator);
+        const day = key.slice(separator + 1);
+        const time = new Date(`${day}T12:00:00`).getTime();
+        if (!Number.isFinite(time) || time < currentStart90 - DAY || time > Date.now() + DAY) continue;
+        perProject.set(id, (perProject.get(id) ?? 0) + value);
+        perDay.set(day, (perDay.get(day) ?? 0) + value);
+      }
+
+      for (const [id, period] of perProject) {
+        focusedProjectPeriods.push({ id, name: projectNames.get(id) || id, period, current: period });
+      }
+
+      const focusedRows = Array.from(perDay, ([day, value]) => ({
+        date: new Date(`${day}T12:00:00`),
+        value,
+      })).sort((a, b) => a.date - b.date);
+      if (focusedRows.length >= 5) {
+        addCandidate(focusedRows, 'total', 'focused-90-day-per-project-captures', 10000);
+      }
+    } else {
+      for (const capture of captured) visit(capture.value, capture.url, 0);
+    }
+    const reactPropsInspected = 0;"#,
         )
         .replace(
             "const currentSeriesPoints = series.filter((row) => {",
             "window.__FODRINTH_CF_DOWNLOAD_STAGE__ = 'render-fallback'; const currentSeriesPoints = series.filter((row) => {",
+        )
+        .replace(
+            "const current = periodCard?.value ?? (enoughCurrentSeries ? sumRange('total', currentStart - DAY, now + DAY) : null);",
+            "const focusedPeriodTotal = focusedProjectPeriods.reduce((sum, project) => sum + (toNumber(project.period) ?? 0), 0); const current = periodCard?.value ?? (enoughCurrentSeries ? sumRange('total', currentStart - DAY, now + DAY) : (focusedProjectPeriods.length ? focusedPeriodTotal : null));",
+        )
+        .replace(
+            "      projects: [],\n      debug,",
+            "      projects: focusedProjectPeriods,\n      debug,",
         )
         .replace(
             "window.__FODRINTH_CF_DOWNLOAD_V3_RESULT__ = {\n      needsLogin: false,",
