@@ -88,8 +88,25 @@ function hasDownloadPayload(downloads) {
 	)
 }
 
+async function settle(promise) {
+	try {
+		return { value: await promise, error: '' }
+	} catch (error) {
+		return { value: null, error: errorText(error) }
+	}
+}
+
 export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
-	let base = {
+	// These readers now use separate hidden WebViews. Start them together so the legacy
+	// rewards reader can no longer delay downloads/projects by an extra minute before their
+	// work even begins.
+	const [baseResult, freshResult, projectsResult] = await Promise.all([
+		settle(invoke('plugin:utils|curseforge_get_author_analytics', { periodDays })),
+		settle(invoke('plugin:utils|curseforge_get_author_downloads', { periodDays })),
+		settle(getCurseForgeAuthorProjects()),
+	])
+
+	const base = baseResult.value ?? {
 		connected: false,
 		needsLogin: false,
 		rewardPoints: null,
@@ -98,42 +115,24 @@ export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
 		withdrawals: [],
 		downloads: null,
 	}
-	let baseError = ''
-	try {
-		base = await invoke('plugin:utils|curseforge_get_author_analytics', {
-			periodDays,
-		})
-	} catch (error) {
-		baseError = errorText(error)
+	const baseError = baseResult.error
+	const freshDownloads = freshResult.value
+	let downloadsError = freshResult.error
+
+	if (import.meta.env.DEV && freshDownloads?.debug) {
+		console.info('[Fodrinth] CurseForge download analytics', freshDownloads.debug)
 	}
 
-	let freshDownloads = null
-	let downloadsError = ''
-	try {
-		freshDownloads = await invoke('plugin:utils|curseforge_get_author_downloads', {
-			periodDays,
-		})
-		if (import.meta.env.DEV && freshDownloads?.debug) {
-			console.info('[Fodrinth] CurseForge download analytics', freshDownloads.debug)
-		}
-	} catch (error) {
-		downloadsError = errorText(error)
-	}
-
-	let authorProjects = []
-	let projectsConnected = false
-	let projectsNeedLogin = false
-	try {
-		const response = await getCurseForgeAuthorProjects()
-		projectsConnected = response?.connected !== false
-		projectsNeedLogin = !!response?.needsLogin
-		authorProjects = Array.isArray(response?.projects) ? response.projects : []
-		if (response?.error && authorProjects.length === 0) {
-			const message = String(response.error)
-			downloadsError = downloadsError ? `${downloadsError}; projects: ${message}` : `projects: ${message}`
-		}
-	} catch (error) {
-		const message = errorText(error)
+	const projectResponse = projectsResult.value
+	const projectsConnected = projectResponse?.connected !== false && !!projectResponse
+	const projectsNeedLogin = !!projectResponse?.needsLogin
+	const authorProjects = Array.isArray(projectResponse?.projects) ? projectResponse.projects : []
+	if (projectsResult.error) {
+		downloadsError = downloadsError
+			? `${downloadsError}; projects: ${projectsResult.error}`
+			: `projects: ${projectsResult.error}`
+	} else if (projectResponse?.error && authorProjects.length === 0) {
+		const message = String(projectResponse.error)
 		downloadsError = downloadsError ? `${downloadsError}; projects: ${message}` : `projects: ${message}`
 	}
 
@@ -172,9 +171,8 @@ export async function getCurseForgeAuthorAnalytics(periodDays = 30) {
 	if (freshDownloads?.error) {
 		downloadsError = downloadsError ? `${downloadsError}; ${String(freshDownloads.error)}` : String(freshDownloads.error)
 	}
-	// The legacy combined reader still scrapes the dashboard with Tauri's callback-based
-	// evaluator. Once the dedicated download reader succeeds, ignore legacy dashboard errors
-	// so a healthy result is not marked stale just because the fallback transport failed.
+	// The legacy combined reader still uses the old callback transport for its dashboard
+	// fallback. Do not let that obsolete fallback poison a healthy dedicated result.
 	if (!freshDownloadsHealthy) {
 		for (const error of [fallbackDownloads?.error, base?.downloadsError]) {
 			if (!error) continue
