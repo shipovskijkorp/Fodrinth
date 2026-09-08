@@ -16,7 +16,7 @@ const PERIODIC_CHECK_MS = 5 * 60 * 1000
 const LOW_LOAD_INTERACTION_MS = 12 * 1000
 const STARTUP_DELAY_MS = 1200
 const RETRY_DELAY_MS = 45 * 1000
-const CURSEFORGE_TIMEOUT_MS = 60 * 1000
+const CURSEFORGE_TIMEOUT_MS = 4 * 60 * 1000
 
 const refreshes = new Map()
 let curseForgeQueue = Promise.resolve()
@@ -119,8 +119,15 @@ function isProviderFresh(provider) {
 	return !!provider && providerAge(provider) < FRESH_FOR_MS
 }
 
+function isCurseForgeFresh(provider) {
+	if (!isProviderFresh(provider) || provider?.error) return false
+	const analytics = provider?.analytics
+	if (!analytics || analytics.needsLogin || analytics.connected === false) return false
+	return true
+}
+
 function isPeriodFresh(snapshot) {
-	return isProviderFresh(snapshot?.modrinth) && isProviderFresh(snapshot?.curseforge)
+	return isProviderFresh(snapshot?.modrinth) && isCurseForgeFresh(snapshot?.curseforge)
 }
 
 async function cacheMatchesCurrentModrinthUser(snapshot) {
@@ -328,9 +335,6 @@ export async function refreshCreatorAnalyticsPeriod(periodDays = 30, { force = f
 				throw error
 			})
 
-		// Providers are intentionally committed independently. The UI can show Modrinth as soon
-		// as it arrives instead of being held hostage by the slower hidden CurseForge webview.
-		// We still wait here so startup keeps the requested 30d -> 90d -> 7d ordering.
 		await Promise.allSettled([modrinthTask, curseForgeTask])
 		return getCreatorAnalyticsSnapshot(days)
 	})()
@@ -419,8 +423,8 @@ export function startCreatorAnalyticsBackground() {
 	}
 
 	// Warm startup analytics sequentially in the requested priority order 30d -> 90d -> 7d.
-	// Each provider streams into the cache independently, while the next period waits for the
-	// current period to resolve or hit the bounded CurseForge timeout.
+	// The CurseForge reader has its own bounded per-page waits, so allow enough time for the
+	// transactions, downloads and projects passes to complete without discarding valid data.
 	scheduleStartupWarmup()
 
 	periodicTimer = window.setInterval(() => {
