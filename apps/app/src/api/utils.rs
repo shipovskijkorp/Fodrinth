@@ -80,11 +80,11 @@ pub async fn should_disable_mouseover() -> bool {
             && minor >= 3
         {
             // Mac os version is 12.3 or higher, we allow mouseover
-            false
-        } else {
-            true
+            return false;
         }
+        true
     } else {
+        // Not macos, we allow mouseover
         false
     }
 }
@@ -109,7 +109,7 @@ pub async fn open_path<R: Runtime>(app: tauri::AppHandle<R>, path: PathBuf) {
         if let Err(e) =
             app.opener().open_path(path.to_string_lossy(), None::<&str>)
         {
-            tracing::error!("Failed to open path: {}", e);
+            tracing::error!("Failed to highlight file in folder: {}", e);
         }
     })
     .await
@@ -153,14 +153,13 @@ pub async fn get_opening_command(
     return if let Some(payload) = payload.as_ref() {
         tracing::info!("opening command {payload}");
 
-        Ok(Some(handler::parse_command(payload).await))
+        Ok(Some(handler::parse_command(payload).await?))
     } else if let Some(cmd_arg) = cmd_arg {
         tracing::info!("opening command {cmd_arg:?}");
-        Ok(Some(handler::parse_command(&cmd_arg).await))
+        Ok(Some(handler::parse_command(&cmd_arg).await?))
     } else {
         Ok(None)
-    }
-    .and_then(|cmd| cmd.map_or(Ok(None), |value| value.map(Some)))
+    };
 }
 
 #[tauri::command]
@@ -179,9 +178,12 @@ pub async fn get_opening_command() -> Result<Option<CommandPayload>> {
     Ok(None)
 }
 
+// helper function called when redirected by a weblink (ie: modrith://do-something) or when redirected by a .mrpack file (in which case its a filepath)
+// We hijack the deep link library (which also contains functionality for instance-checking)
 pub async fn handle_command(command: String) -> Result<()> {
-    tracing::info!("handle command: {command}");
-    Ok(theseus::handler::parse_and_emit_command(&command).await?)
+    tracing::info!("handle_command: {command}");
+    handler::parse_and_emit_command(&command).await?;
+    Ok(())
 }
 
 // Remove when (and if) https://github.com/tauri-apps/tauri/issues/12022 is implemented
